@@ -1,568 +1,468 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PayNix | Virtual Cards by CodeNix</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .credit-card {
-            background: linear-gradient(135deg, #312e81 0%, #1e1b4b 100%);
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .gradient-text {
-            background: linear-gradient(to right, #818cf8, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .fade-in { animation: fadeIn 0.4s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        #custom-alert {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(6px);
-            z-index: 9999;
-            align-items: center;
-            justify-content: center;
-        }
+import React, { useState, useEffect } from 'react';
+import { 
+  User, 
+  Layout, 
+  CreditCard, 
+  Settings, 
+  LogOut, 
+  Globe, 
+  ShieldCheck, 
+  Cpu, 
+  Edit3, 
+  Save, 
+  PlusCircle,
+  Smartphone,
+  CheckCircle2,
+  ExternalLink
+} from 'lucide-react';
 
-        .points-badge {
-            background: linear-gradient(45deg, #f59e0b, #d97706);
-            box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
-        }
+// --- CONFIGURATION ---
+const SUPABASE_URL = "https://vnyltfnyuzlfdzjpkzbu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_fo3B8xkI1AG-u2nJaGK2YQ_LbE5khrC";
 
-        .referral-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(99, 102, 241, 0.2);
-        }
+// Helper to get supabase client from window (loaded via CDN)
+const getSupabase = () => {
+  if (typeof window !== 'undefined' && window.supabase) {
+    return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return null;
+};
 
-        .scroll-hide::-webkit-scrollbar { display: none; }
-    </style>
-</head>
-<body class="bg-[#0f172a] text-slate-200 min-h-screen flex flex-col">
+const App = () => {
+  const [supabase, setSupabase] = useState(null);
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState(null);
+  const [view, setView] = useState('dashboard'); // dashboard | profile | auth
+  const [authMode, setAuthMode] = useState('signin'); // signin | signup
+  
+  // Form States
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
+  const [error, setError] = useState(null);
 
-    <!-- Custom Alert Modal -->
-    <div id="custom-alert">
-        <div class="bg-slate-800 border border-slate-700 p-8 rounded-3xl max-w-sm w-full mx-4 text-center shadow-2xl">
-            <div id="alert-icon" class="w-16 h-16 bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
-                <i class="fas fa-info-circle"></i>
-            </div>
-            <h3 id="alert-title" class="text-xl font-bold mb-2 text-white">Notice</h3>
-            <p id="alert-msg" class="text-slate-400 mb-6"></p>
-            <button id="alert-ok" class="w-full bg-indigo-600 hover:bg-indigo-700 py-3 rounded-xl font-bold transition">Continue</button>
+  // Initialize Supabase from CDN
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+    script.async = true;
+    script.onload = () => {
+      const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      setSupabase(client);
+    };
+    document.body.appendChild(script);
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchProfile(session.user.id);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) fetchProfile(session.user.id);
+      else setProfile(null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase]);
+
+  const fetchProfile = async (userId) => {
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (data) setProfile(data);
+    else if (error) console.error("Profile fetch error:", error);
+  };
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    if (!supabase) return;
+    setError(null);
+    setLoading(true);
+
+    try {
+      if (authMode === 'signup') {
+        const nixId = `${username}@nix`;
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { username, nix_id: nixId }
+          }
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateProfile = async (updates) => {
+    if (!supabase || !session) return;
+    setLoading(true);
+    const { error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', session.user.id);
+    
+    if (error) setError(error.message);
+    else fetchProfile(session.user.id);
+    setLoading(false);
+  };
+
+  if (loading && !session) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+      </div>
+    );
+  }
+
+  // --- COMPONENTS ---
+
+  const SidebarItem = ({ icon: Icon, label, active, onClick }) => (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all ${
+        active 
+        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' 
+        : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+      }`}
+    >
+      <Icon size={20} />
+      <span className="font-medium">{label}</span>
+    </button>
+  );
+
+  const StatCard = ({ label, value, icon: Icon, color }) => (
+    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-slate-400 text-sm font-medium uppercase tracking-wider">{label}</span>
+        <div className={`p-2 rounded-lg ${color}`}>
+          <Icon size={20} className="text-white" />
         </div>
+      </div>
+      <div className="text-2xl font-bold text-white">{value}</div>
     </div>
+  );
 
-    <!-- Navigation -->
-    <nav class="border-b border-slate-800/50 bg-slate-900/80 backdrop-blur-xl fixed w-full z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-20">
-                <div class="flex items-center cursor-pointer group" onclick="navigateTo('index')">
-                    <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center mr-3 group-hover:rotate-12 transition-transform">
-                        <i class="fas fa-bolt text-white"></i>
+  // --- VIEWS ---
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col md:flex-row font-sans">
+        {/* Left Side: Branding */}
+        <div className="w-full md:w-1/2 p-12 flex flex-col justify-between bg-gradient-to-br from-indigo-900 via-slate-950 to-black">
+          <div>
+            <div className="flex items-center space-x-2 mb-8">
+              <Cpu className="text-indigo-500" size={32} />
+              <span className="text-2xl font-bold text-white tracking-tighter">IdNix</span>
+            </div>
+            <h1 className="text-5xl md:text-7xl font-extrabold text-white mb-6 leading-tight">
+              One Identity. <br />
+              <span className="text-indigo-500 underline decoration-indigo-500/30">Infinite</span> Access.
+            </h1>
+            <p className="text-slate-400 text-xl max-w-md leading-relaxed">
+              Unlock the CodeNix ecosystem with a single NixID. Manage credits, apps, and preferences in one unified portal.
+            </p>
+          </div>
+          <div className="hidden md:block text-slate-500 text-sm">
+            © 2024 CodeNix Systems. All rights reserved.
+          </div>
+        </div>
+
+        {/* Right Side: Auth Form */}
+        <div className="w-full md:w-1/2 p-6 md:p-24 flex items-center justify-center bg-slate-950">
+          <div className="w-full max-w-md">
+            <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-3xl backdrop-blur-xl">
+              <h2 className="text-3xl font-bold text-white mb-2">
+                {authMode === 'signin' ? 'Welcome Back' : 'Join IdNix'}
+              </h2>
+              <p className="text-slate-400 mb-8">
+                {authMode === 'signin' 
+                  ? 'Sign in to access your services.' 
+                  : 'Create your unique nixID and start exploring.'}
+              </p>
+
+              <form onSubmit={handleAuth} className="space-y-4">
+                {authMode === 'signup' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-400 mb-1">Username</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        required
+                        placeholder="john_doe"
+                        className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s/g, ''))}
+                      />
+                      <span className="absolute right-4 top-3 text-slate-500">@nix</span>
                     </div>
-                    <span class="text-2xl font-black tracking-tighter text-white">PAY<span class="text-indigo-500">NIX</span></span>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-slate-400 mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
                 </div>
-                <div id="nav-container"></div>
-            </div>
-        </div>
-    </nav>
-
-    <!-- Main Content Area -->
-    <main class="flex-grow pt-28 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full" id="app-container">
-        <div class="flex flex-col justify-center items-center h-96">
-            <div class="relative w-16 h-16">
-                <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
-                <div class="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-            </div>
-            <p class="mt-4 text-slate-500 font-medium">Initializing Secure Session...</p>
-        </div>
-    </main>
-
-    <footer class="border-t border-slate-800/50 py-10 text-center text-slate-500 text-sm mt-auto">
-        <p>&copy; 2024 CodeNix Services. All rights reserved.</p>
-    </footer>
-
-    <script>
-        const SUPABASE_URL = 'https://vnyltfnyuzlfdzjpkzbu.supabase.co';
-        const SUPABASE_KEY = 'sb_publishable_fo3B8xkI1AG-u2nJaGK2YQ_LbE5khrC'; 
-        
-        let supabaseApp;
-        try {
-            supabaseApp = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-        } catch(e) { console.error("Client Init Error:", e); }
-
-        let currentUser = null;
-        let currentProfile = null;
-        let userCard = null;
-        let transactions = [];
-        let cardSubscription = null;
-        let currentPage = 'index';
-
-        async function withRetry(fn, retries = 3) {
-            for (let i = 0; i < retries; i++) {
-                try { return await fn(); } catch (err) {
-                    if (i === retries - 1) throw err;
-                    await new Promise(res => setTimeout(res, Math.pow(2, i) * 800));
-                }
-            }
-        }
-
-        async function init() {
-            try {
-                const urlParams = new URLSearchParams(window.location.search);
-                const ref = urlParams.get('ref');
-                if (ref) localStorage.setItem('paynix_referrer', ref);
-
-                const { data: { session }, error } = await supabaseApp.auth.getSession();
-                if (error) throw error;
-                handleSession(session);
-                supabaseApp.auth.onAuthStateChange((_event, session) => handleSession(session));
-            } catch (err) {
-                renderIndex();
-            }
-        }
-
-        async function handleSession(session) {
-            if (session) {
-                currentUser = session.user;
-                renderLoading("Syncing Cloud Data...");
-                try {
-                    await withRetry(() => syncProfile());
-                    await withRetry(() => fetchUserData());
-                    setupRealtimeListeners();
-                } catch (e) {
-                    console.error("Connection Error:", e);
-                    showCustomAlert("Connection Note", "Preview Mode active.", () => renderPortal(), 'fa-database');
-                }
-            } else {
-                if (cardSubscription) supabaseApp.removeChannel(cardSubscription);
-                currentUser = null;
-                currentProfile = null;
-                userCard = null;
-                renderIndex();
-            }
-        }
-
-        async function syncProfile() {
-            if (!currentUser) return;
-            const fullName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Member';
-            
-            let initialPoints = 50; 
-            const storedReferrer = localStorage.getItem('paynix_referrer');
-            const { data: existing } = await supabaseApp.from('profiles').select('id').eq('id', currentUser.id).maybeSingle();
-            
-            if (!existing && storedReferrer) {
-                initialPoints += 200;
-                localStorage.removeItem('paynix_referrer');
-            }
-
-            await supabaseApp.from('profiles').upsert({
-                id: currentUser.id,
-                email: currentUser.email,
-                full_name: fullName,
-                points: currentProfile?.points || initialPoints
-            }, { onConflict: 'id' });
-        }
-
-        async function fetchUserData() {
-            if (!currentUser) return;
-            const { data: profile } = await supabaseApp.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
-            currentProfile = profile || { points: 50, full_name: currentUser.email.split('@')[0] };
-
-            const { data: card } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
-            userCard = card;
-
-            // Fetch History & Update Balance if Received money
-            await fetchTransactions();
-            
-            if (currentPage === 'earn') renderEarnPage();
-            else renderPortal();
-        }
-
-        async function fetchTransactions() {
-            if (!currentUser) return;
-            // Fetch both sent and received
-            const { data: sent } = await supabaseApp.from('transfers').select('*').eq('sender_id', currentUser.id);
-            const { data: received } = await supabaseApp.from('transfers').select('*').eq('recipient_email', currentUser.email);
-            
-            // Logic for auto-updating balance for received funds
-            if (received && userCard) {
-                let pendingIncrease = 0;
-                for (const item of received) {
-                    if (item.status === 'pending_claim') {
-                        pendingIncrease += parseFloat(item.amount);
-                        // Mark as claimed so we don't add it again next refresh
-                        await supabaseApp.from('transfers').update({ status: 'completed' }).eq('id', item.id);
-                    }
-                }
-                if (pendingIncrease > 0) {
-                    const newBal = parseFloat(userCard.balance) + pendingIncrease;
-                    await supabaseApp.from('cards').update({ balance: newBal }).eq('user_id', currentUser.id);
-                    userCard.balance = newBal;
-                }
-            }
-
-            transactions = [
-                ...(sent || []).map(t => ({ ...t, type: 'sent' })),
-                ...(received || []).map(t => ({ ...t, type: 'received' }))
-            ].sort((a, b) => new Date(b.created_at || Date.now()) - new Date(a.created_at || Date.now()));
-        }
-
-        function setupRealtimeListeners() {
-            if (!currentUser) return;
-            if (cardSubscription) supabaseApp.removeChannel(cardSubscription);
-            cardSubscription = supabaseApp.channel('db_sync').on('postgres_changes', { event: '*', schema: 'public' }, () => fetchUserData()).subscribe();
-        }
-
-        async function createCard() {
-            const btn = document.getElementById('create-btn');
-            if (!btn) return;
-            btn.innerText = "Processing...";
-            btn.disabled = true;
-
-            try {
-                const cardData = {
-                    user_id: currentUser.id,
-                    card_number: '4' + Array.from({length: 15}, () => Math.floor(Math.random() * 10)).join(''),
-                    cvv: Math.floor(100 + Math.random() * 900).toString(),
-                    holder_name: currentProfile?.full_name || 'PAYNIX USER',
-                    status: 'active',
-                    balance: 10.00
-                };
-                await supabaseApp.from('cards').insert([cardData]);
-                await updatePoints(100); 
-                userCard = cardData;
-                renderCertificate(cardData);
-            } catch (err) {
-                renderPortal();
-            }
-        }
-
-        async function updatePoints(amount) {
-            const newPoints = (currentProfile?.points || 0) + amount;
-            await supabaseApp.from('profiles').update({ points: newPoints }).eq('id', currentUser.id);
-            currentProfile.points = newPoints;
-            updateNav();
-        }
-
-        async function convertPoints() {
-            if (!currentProfile || currentProfile.points < 100) {
-                showCustomAlert("Insufficient Points", "You need at least 100 NixPoints.");
-                return;
-            }
-            if (!userCard) {
-                showCustomAlert("No Card", "Issue a card first.");
-                return;
-            }
-
-            renderLoading("Converting Points...");
-            const coins = Math.floor(currentProfile.points / 100);
-            const dollarValue = coins * 1.00;
-
-            try {
-                await supabaseApp.from('profiles').update({ points: currentProfile.points - (coins * 100) }).eq('id', currentUser.id);
-                await supabaseApp.from('cards').update({ balance: parseFloat(userCard.balance) + dollarValue }).eq('user_id', currentUser.id);
-                showCustomAlert("Success!", `Converted ${coins * 100} points into $${dollarValue.toFixed(2)}.`);
-                fetchUserData();
-            } catch (e) {
-                renderPortal();
-            }
-        }
-
-        async function handleTransfer(e) {
-            e.preventDefault();
-            const recipient = document.getElementById('transfer-email').value;
-            const amount = parseFloat(document.getElementById('transfer-amount').value);
-            
-            if (amount > userCard.balance) {
-                showCustomAlert("Insufficient Funds", "Balance too low.");
-                return;
-            }
-
-            renderLoading("Processing Transfer...");
-            try {
-                // Record the transfer
-                await supabaseApp.from('transfers').insert([{
-                    sender_id: currentUser.id,
-                    sender_email: currentUser.email,
-                    recipient_email: recipient,
-                    amount: amount,
-                    status: 'pending_claim'
-                }]);
-
-                // Update sender balance
-                await supabaseApp.from('cards').update({ balance: userCard.balance - amount }).eq('user_id', currentUser.id);
-                await updatePoints(20);
+                <div>
+                  <label className="block text-sm font-medium text-slate-400 mb-1">Password</label>
+                  <input
+                    type="password"
+                    required
+                    className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
                 
-                showCustomAlert("Transfer Sent", `Successfully sent $${amount.toFixed(2)} to ${recipient}.`);
-                fetchUserData();
-            } catch(e) {
-                showCustomAlert("Error", "Transfer failed.");
-                renderPortal();
-            }
-        }
+                {error && <div className="text-red-400 text-sm bg-red-400/10 p-3 rounded-lg border border-red-400/20">{error}</div>}
 
-        function copyReferralLink() {
-            const link = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
-            const el = document.createElement('textarea');
-            el.value = link; document.body.appendChild(el);
-            el.select(); document.execCommand('copy'); document.body.removeChild(el);
-            
-            const btn = document.getElementById('copy-ref-btn');
-            btn.innerHTML = '<i class="fas fa-check mr-2"></i> Copied!';
-            setTimeout(() => { btn.innerHTML = 'Copy Link'; }, 2000);
-        }
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl transition-all transform active:scale-[0.98] disabled:opacity-50 shadow-lg shadow-indigo-600/20"
+                >
+                  {loading ? 'Processing...' : (authMode === 'signin' ? 'Sign In' : 'Create Identity')}
+                </button>
+              </form>
 
-        function showCustomAlert(title, msg, onOk, icon = 'fa-info-circle') {
-            const modal = document.getElementById('custom-alert');
-            document.getElementById('alert-title').innerText = title;
-            document.getElementById('alert-msg').innerText = msg;
-            document.getElementById('alert-icon').innerHTML = `<i class="fas ${icon}"></i>`;
-            modal.style.display = 'flex';
-            document.getElementById('alert-ok').onclick = () => {
-                modal.style.display = 'none';
-                if (onOk) onOk();
-            };
-        }
+              <div className="mt-8 text-center">
+                <button 
+                  onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}
+                  className="text-indigo-400 hover:text-indigo-300 font-medium text-sm transition-colors"
+                >
+                  {authMode === 'signin' 
+                    ? "Don't have an ID? Create one now" 
+                    : "Already have an ID? Sign in"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-        function navigateTo(page, params = {}) {
-            currentPage = page;
-            if (page === 'index') currentUser ? renderPortal() : renderIndex();
-            else if (page === 'auth') renderAuth(params.mode || 'login');
-            else if (page === 'portal') currentUser ? renderPortal() : renderAuth('login');
-            else if (page === 'earn') currentUser ? renderEarnPage() : renderAuth('login');
-        }
+  return (
+    <div className="min-h-screen bg-slate-950 flex text-slate-200 font-sans">
+      {/* Sidebar */}
+      <aside className="w-64 border-r border-slate-800 flex-col hidden lg:flex">
+        <div className="p-8">
+          <div className="flex items-center space-x-2">
+            <Cpu className="text-indigo-500" size={24} />
+            <span className="text-xl font-bold text-white tracking-tighter uppercase">IdNix</span>
+          </div>
+        </div>
+        
+        <nav className="flex-1 px-4 space-y-2">
+          <SidebarItem icon={Layout} label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+          <SidebarItem icon={User} label="My Profile" active={view === 'profile'} onClick={() => setView('profile')} />
+          <SidebarItem icon={Globe} label="Connected Apps" active={false} onClick={() => {}} />
+          <SidebarItem icon={ShieldCheck} label="Security" active={false} onClick={() => {}} />
+        </nav>
 
-        function updateNav() {
-            const nav = document.getElementById('nav-container');
-            if (currentUser) {
-                nav.innerHTML = `
-                    <div class="flex items-center gap-4 fade-in">
-                        <button onclick="navigateTo('earn')" class="hidden sm:flex items-center gap-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-amber-500/20 transition">
-                            <i class="fas fa-gift"></i> Earn Points
-                        </button>
-                        <div class="hidden md:flex flex-col items-end">
-                            <span class="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">NixPoints</span>
-                            <span class="text-sm font-bold text-white flex items-center gap-1">
-                                <i class="fas fa-star text-amber-400 text-xs"></i> ${currentProfile?.points || 0}
-                            </span>
+        <div className="p-4 border-t border-slate-800">
+          <button 
+            onClick={() => supabase.auth.signOut()}
+            className="w-full flex items-center space-x-3 px-4 py-3 text-slate-500 hover:text-red-400 transition-colors"
+          >
+            <LogOut size={20} />
+            <span className="font-medium">Sign Out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto">
+        {/* Top Header */}
+        <header className="h-20 border-b border-slate-800 flex items-center justify-between px-8 sticky top-0 bg-slate-950/80 backdrop-blur-md z-10">
+          <h2 className="text-xl font-semibold text-white">
+            {view === 'dashboard' ? 'Overview' : 'Profile Settings'}
+          </h2>
+          <div className="flex items-center space-x-4">
+            <div className="text-right hidden sm:block">
+              <p className="text-sm font-bold text-white leading-none">{profile?.username}</p>
+              <p className="text-xs text-indigo-400">{profile?.nix_id}</p>
+            </div>
+            <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold ring-2 ring-indigo-500/20 shadow-lg">
+              {profile?.username?.[0]?.toUpperCase()}
+            </div>
+          </div>
+        </header>
+
+        <div className="p-8 max-w-6xl mx-auto">
+          {view === 'dashboard' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              {/* Stats Section */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <StatCard 
+                  label="Daily Nix Credits" 
+                  value={`${profile?.credit_balance || 0} NX`} 
+                  icon={CreditCard} 
+                  color="bg-emerald-600" 
+                />
+                <StatCard 
+                  label="Tier Level" 
+                  value={profile?.tier || 'Member'} 
+                  icon={ShieldCheck} 
+                  color="bg-indigo-600" 
+                />
+                <StatCard 
+                  label="Active Apps" 
+                  value={profile?.apps_used || 0} 
+                  icon={Smartphone} 
+                  color="bg-amber-600" 
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* ID Card Display */}
+                <div className="bg-gradient-to-br from-indigo-600 to-indigo-900 p-8 rounded-3xl text-white relative overflow-hidden shadow-2xl shadow-indigo-600/20 group">
+                  <div className="relative z-10">
+                    <div className="flex justify-between items-start mb-12">
+                      <Cpu size={32} />
+                      <span className="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-widest">Digital Passport</span>
+                    </div>
+                    <div>
+                      <p className="text-indigo-200 text-xs font-medium uppercase tracking-widest mb-1">Universal Identity</p>
+                      <h3 className="text-3xl font-mono font-bold mb-6 tracking-tight">{profile?.nix_id}</h3>
+                      <div className="flex space-x-12">
+                        <div>
+                          <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-widest">Member Since</p>
+                          <p className="text-sm font-bold">{profile?.created_at ? new Date(profile.created_at).getFullYear() : '2024'}</p>
                         </div>
-                        <button onclick="logout()" class="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 transition-all">
-                            <i class="fas fa-power-off"></i>
-                        </button>
-                    </div>
-                `;
-            } else {
-                nav.innerHTML = `
-                    <div class="flex gap-4 fade-in">
-                        <button onclick="navigateTo('auth', {mode: 'login'})" class="text-slate-300 font-bold px-4 py-2 text-sm">Log In</button>
-                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-indigo-500/20">Sign Up</button>
-                    </div>
-                `;
-            }
-        }
-
-        function renderLoading(text = "Loading...") {
-            document.getElementById('app-container').innerHTML = `
-                <div class="flex flex-col justify-center items-center h-96">
-                    <div class="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                    <p class="mt-4 text-slate-500 animate-pulse font-medium">${text}</p>
-                </div>`;
-        }
-
-        function renderIndex() {
-            updateNav();
-            document.getElementById('app-container').innerHTML = `
-                <div class="fade-in text-center py-20">
-                    <span class="bg-indigo-500/10 text-indigo-400 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest mb-6 inline-block border border-indigo-500/20">Next-Gen Virtual Banking</span>
-                    <h1 class="text-6xl md:text-8xl font-black mb-8 tracking-tighter leading-none text-white">Earn. Spend.<br/><span class="gradient-text">Convert Points.</span></h1>
-                    <p class="text-slate-400 max-w-2xl mx-auto mb-10 text-lg">Instant virtual Mastercards with built-in rewards. Join thousands already spending.</p>
-                    <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:bg-indigo-700 transition shadow-2xl shadow-indigo-500/40">Start Earning Now</button>
-                </div>
-            `;
-        }
-
-        function renderAuth(mode = 'login') {
-            updateNav();
-            const isLogin = mode === 'login';
-            document.getElementById('app-container').innerHTML = `
-                <div class="fade-in max-w-md mx-auto p-10 bg-slate-800/50 rounded-3xl border border-slate-700/50 shadow-2xl">
-                    <div class="text-center mb-8">
-                        <h2 class="text-3xl font-black text-white">${isLogin ? 'Welcome Back' : 'Create Account'}</h2>
-                        <p class="text-slate-400 text-sm mt-2">Join today and earn 50 welcome points!</p>
-                    </div>
-                    <form onsubmit="${isLogin ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-4">
-                        ${!isLogin ? `<input type="text" id="fullname" required placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">` : ''}
-                        <input type="email" id="email" required placeholder="Email Address" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">
-                        <input type="password" id="password" required placeholder="Password" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">
-                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-indigo-500/20">
-                            ${isLogin ? 'Sign In' : 'Sign Up'}
-                        </button>
-                    </form>
-                    <p class="mt-6 text-center text-sm text-slate-400">
-                        ${isLogin ? "New? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Create account</span>" : "Have account? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Log in</span>"}
-                    </p>
-                </div>
-            `;
-        }
-
-        async function handleSignup(e) {
-            e.preventDefault();
-            const { error } = await supabaseApp.auth.signUp({ 
-                email: document.getElementById('email').value, 
-                password: document.getElementById('password').value, 
-                options: { data: { full_name: document.getElementById('fullname').value } }
-            });
-            if (error) showCustomAlert("Error", error.message);
-            else showCustomAlert("Success", "Check email for verification.");
-        }
-
-        async function handleLogin(e) {
-            e.preventDefault();
-            const { error } = await supabaseApp.auth.signInWithPassword({
-                email: document.getElementById('email').value,
-                password: document.getElementById('password').value
-            });
-            if (error) showCustomAlert("Error", error.message);
-        }
-
-        async function logout() { await supabaseApp.auth.signOut(); location.reload(); }
-
-        function renderPortal() {
-            updateNav();
-            const app = document.getElementById('app-container');
-            if (!userCard) {
-                app.innerHTML = `<div class="fade-in max-w-2xl mx-auto py-12 text-center"><h2 class="text-4xl font-black text-white mb-4">Ready?</h2><button onclick="createCard()" id="create-btn" class="bg-indigo-600 text-white font-bold py-4 px-12 rounded-xl transition transform hover:scale-105">Generate Virtual Card (+100 Points)</button></div>`;
-                return;
-            }
-
-            const num = userCard.card_number.match(/.{1,4}/g).join(' ');
-            app.innerHTML = `
-                <div class="fade-in max-w-6xl mx-auto">
-                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                        <!-- Main Panel -->
-                        <div class="lg:col-span-8 space-y-8">
-                            <div class="credit-card aspect-[1.586] w-full max-w-md mx-auto lg:mx-0 rounded-3xl p-8 text-white flex flex-col justify-between">
-                                <div class="flex justify-between items-start">
-                                    <div class="text-xl font-black italic">PAYNIX</div>
-                                    <i class="fab fa-cc-mastercard text-4xl opacity-90"></i>
-                                </div>
-                                <p class="font-mono text-2xl tracking-widest text-center">${num}</p>
-                                <div class="flex justify-between items-end">
-                                    <div><p class="text-[10px] text-indigo-300 uppercase font-bold">Holder</p><p class="font-bold uppercase tracking-tight">${userCard.holder_name}</p></div>
-                                    <div class="text-right"><p class="text-[10px] text-indigo-300 uppercase font-bold">CVV</p><p class="font-bold tracking-widest">${userCard.cvv}</p></div>
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
-                                    <h3 class="text-slate-500 text-xs font-black uppercase mb-2">Available Balance</h3>
-                                    <p class="text-5xl font-black text-white">$${parseFloat(userCard.balance).toFixed(2)}</p>
-                                </div>
-                                <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
-                                    <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2"><i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer</h3>
-                                    <form onsubmit="handleTransfer(event)" class="space-y-3">
-                                        <input type="email" id="transfer-email" required placeholder="Recipient Email" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
-                                        <input type="number" id="transfer-amount" required step="0.01" placeholder="Amount $" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
-                                        <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">Send Funds (+20 pts)</button>
-                                    </form>
-                                </div>
-                            </div>
-
-                            <!-- Transaction History -->
-                            <div class="bg-slate-800/40 rounded-3xl border border-slate-700/50 overflow-hidden">
-                                <div class="p-6 border-b border-slate-700/50 flex items-center justify-between">
-                                    <h3 class="text-white font-bold flex items-center gap-2"><i class="fas fa-history text-indigo-400"></i> Recent Activity</h3>
-                                </div>
-                                <div class="max-h-[300px] overflow-y-auto scroll-hide">
-                                    ${transactions.length === 0 ? 
-                                        `<div class="p-10 text-center text-slate-500 text-sm italic">No recent transactions.</div>` : 
-                                        transactions.map(t => `
-                                            <div class="p-4 border-b border-slate-700/30 flex items-center justify-between hover:bg-slate-700/20 transition">
-                                                <div class="flex items-center gap-4">
-                                                    <div class="w-10 h-10 rounded-full flex items-center justify-center ${t.type === 'received' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}">
-                                                        <i class="fas ${t.type === 'received' ? 'fa-arrow-down' : 'fa-arrow-up'}"></i>
-                                                    </div>
-                                                    <div>
-                                                        <p class="text-white text-sm font-bold">${t.type === 'received' ? 'Received from ' + (t.sender_email || 'System') : 'Sent to ' + t.recipient_email}</p>
-                                                        <p class="text-[10px] text-slate-500 uppercase font-black">${new Date(t.created_at).toLocaleDateString()}</p>
-                                                    </div>
-                                                </div>
-                                                <div class="text-right">
-                                                    <p class="font-black ${t.type === 'received' ? 'text-emerald-500' : 'text-slate-200'}">${t.type === 'received' ? '+' : '-'}$${parseFloat(t.amount).toFixed(2)}</p>
-                                                    <span class="text-[8px] bg-slate-700 px-2 py-0.5 rounded text-slate-300 uppercase">${t.status}</span>
-                                                </div>
-                                            </div>
-                                        `).join('')
-                                    }
-                                </div>
-                            </div>
+                        <div>
+                          <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-widest">Status</p>
+                          <p className="text-sm font-bold flex items-center space-x-1">
+                            <CheckCircle2 size={14} className="text-emerald-300" />
+                            <span>Verified</span>
+                          </p>
                         </div>
-
-                        <!-- Sidebar -->
-                        <div class="lg:col-span-4 space-y-6">
-                            <div class="bg-slate-800/60 p-8 rounded-3xl border border-slate-700 border-t-amber-500/50 relative overflow-hidden">
-                                <h3 class="text-slate-400 text-xs font-black uppercase mb-6">NixPoints Rewards</h3>
-                                <div class="flex items-center justify-between mb-8">
-                                    <div><p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p><p class="text-amber-500 text-xs font-bold">Total Pts</p></div>
-                                    <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl"><i class="fas fa-gem"></i></div>
-                                </div>
-                                <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 text-amber-950 font-black rounded-2xl transition hover:bg-amber-600">Convert to Cash</button>
-                                <button onclick="navigateTo('earn')" class="w-full mt-4 py-3 bg-slate-700 text-white text-xs font-bold rounded-xl transition uppercase">Refer & Earn</button>
-                            </div>
-                        </div>
+                      </div>
                     </div>
+                  </div>
+                  {/* Decorative element */}
+                  <div className="absolute -right-12 -bottom-12 w-48 h-48 bg-white/5 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
                 </div>
-            `;
-        }
 
-        function renderEarnPage() {
-            updateNav();
-            const app = document.getElementById('app-container');
-            const refLink = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
-            app.innerHTML = `
-                <div class="fade-in max-w-4xl mx-auto">
-                    <div class="flex items-center gap-4 mb-8">
-                        <button onclick="navigateTo('portal')" class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i class="fas fa-arrow-left"></i></button>
-                        <h2 class="text-3xl font-black text-white">Boost NixPoints</h2>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div class="referral-card p-10 rounded-[2rem]">
-                            <h3 class="text-2xl font-black text-white mb-2">Refer a Friend</h3>
-                            <p class="text-slate-400 text-sm mb-8">Both receive <span class="text-amber-500 font-bold">200 NixPoints</span> ($2.00) instantly.</p>
-                            <div class="bg-slate-900/80 border border-slate-700 p-4 rounded-2xl mb-6">
-                                <p class="text-[10px] text-indigo-400 font-mono truncate mb-2">${refLink}</p>
-                                <button id="copy-ref-btn" onclick="copyReferralLink()" class="bg-indigo-600 text-white text-[10px] font-bold px-4 py-2 rounded-lg">Copy Link</button>
-                            </div>
-                        </div>
-                    </div>
+                {/* Quick Info */}
+                <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl">
+                  <h3 className="text-lg font-bold mb-6 flex items-center space-x-2">
+                    <ExternalLink size={20} className="text-indigo-500" />
+                    <span>Quick Actions</span>
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50">
+                      <PlusCircle className="text-indigo-400 mb-2" />
+                      <p className="text-sm font-bold">Add Funds</p>
+                    </button>
+                    <button onClick={() => setView('profile')} className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50">
+                      <Edit3 className="text-indigo-400 mb-2" />
+                      <p className="text-sm font-bold">Update Profile</p>
+                    </button>
+                    <button className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50 col-span-2">
+                      <div className="flex justify-between items-center">
+                        <p className="text-sm font-bold">Explore Nix Apps</p>
+                        <ExternalLink size={16} className="text-slate-500" />
+                      </div>
+                    </button>
+                  </div>
                 </div>
-            `;
-        }
+              </div>
+            </div>
+          )}
 
-        function renderCertificate(card) {
-            document.getElementById('app-container').innerHTML = `
-                <div class="fade-in max-w-xl mx-auto py-10">
-                    <div class="bg-slate-800 border-4 border-double border-indigo-500 p-12 text-center rounded shadow-2xl">
-                        <h1 class="text-2xl font-black text-white mb-6 uppercase">Mastercard Issued</h1>
-                        <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700 mb-8 text-left">
-                            <p class="text-2xl font-mono text-white tracking-widest">${card.card_number.match(/.{1,4}/g).join(' ')}</p>
-                        </div>
-                        <button onclick="renderPortal()" class="bg-indigo-600 text-white font-bold py-4 w-full rounded-xl">Go to Dashboard</button>
-                    </div>
+          {view === 'profile' && (
+            <div className="max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
+                <div className="p-8 border-b border-slate-800">
+                  <h3 className="text-xl font-bold mb-2">Edit your Nix Identity</h3>
+                  <p className="text-slate-400 text-sm">Update your public information across the ecosystem.</p>
                 </div>
-            `;
-        }
+                
+                <div className="p-8 space-y-6">
+                  <div className="grid grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-400 mb-2">Full Name</label>
+                      <input 
+                        type="text" 
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        defaultValue={profile?.full_name}
+                        onBlur={(e) => updateProfile({ full_name: e.target.value })}
+                        placeholder="John Doe"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-400 mb-2">Location</label>
+                      <input 
+                        type="text" 
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        defaultValue={profile?.location}
+                        onBlur={(e) => updateProfile({ location: e.target.value })}
+                        placeholder="San Francisco, CA"
+                      />
+                    </div>
+                  </div>
 
-        window.onload = init;
-    </script>
-</body>
-</html>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-400 mb-2">Biography</label>
+                    <textarea 
+                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32"
+                      defaultValue={profile?.bio}
+                      onBlur={(e) => updateProfile({ bio: e.target.value })}
+                      placeholder="Tell the Nix network about yourself..."
+                    ></textarea>
+                  </div>
+
+                  <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl">
+                    <div className="flex items-start space-x-3">
+                      <ShieldCheck className="text-indigo-400 shrink-0 mt-1" size={18} />
+                      <div>
+                        <p className="text-sm font-bold text-indigo-200">System Information</p>
+                        <p className="text-xs text-indigo-400/80">Your nixID (<span className="font-mono">{profile?.nix_id}</span>) and email cannot be changed once established for security reasons.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="p-8 bg-slate-900/50 border-t border-slate-800 flex justify-end">
+                   <button 
+                    disabled={loading}
+                    className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-indigo-600/20"
+                   >
+                     <Save size={18} />
+                     <span>{loading ? 'Saving...' : 'Save Changes'}</span>
+                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export default App;
