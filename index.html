@@ -42,6 +42,8 @@
             background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
             border: 1px solid rgba(99, 102, 241, 0.2);
         }
+
+        .scroll-hide::-webkit-scrollbar { display: none; }
     </style>
 </head>
 <body class="bg-[#0f172a] text-slate-200 min-h-screen flex flex-col">
@@ -75,7 +77,6 @@
 
     <!-- Main Content Area -->
     <main class="flex-grow pt-28 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full" id="app-container">
-        <!-- Initial Loading State -->
         <div class="flex flex-col justify-center items-center h-96">
             <div class="relative w-16 h-16">
                 <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
@@ -101,6 +102,7 @@
         let currentUser = null;
         let currentProfile = null;
         let userCard = null;
+        let transactions = [];
         let cardSubscription = null;
         let currentPage = 'index';
 
@@ -115,7 +117,6 @@
 
         async function init() {
             try {
-                // Check if there is a referral in the URL
                 const urlParams = new URLSearchParams(window.location.search);
                 const ref = urlParams.get('ref');
                 if (ref) localStorage.setItem('paynix_referrer', ref);
@@ -139,7 +140,7 @@
                     setupRealtimeListeners();
                 } catch (e) {
                     console.error("Connection Error:", e);
-                    showCustomAlert("Connection Note", "Unable to load some server data. Entering Preview Mode.", () => renderPortal(), 'fa-database');
+                    showCustomAlert("Connection Note", "Preview Mode active.", () => renderPortal(), 'fa-database');
                 }
             } else {
                 if (cardSubscription) supabaseApp.removeChannel(cardSubscription);
@@ -154,26 +155,21 @@
             if (!currentUser) return;
             const fullName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Member';
             
-            // Handle Referral Logic on First Sync
-            let initialPoints = 50; // Base welcome points
+            let initialPoints = 50; 
             const storedReferrer = localStorage.getItem('paynix_referrer');
-            
             const { data: existing } = await supabaseApp.from('profiles').select('id').eq('id', currentUser.id).maybeSingle();
             
             if (!existing && storedReferrer) {
-                initialPoints += 200; // Bonus for being referred
-                // Note: In a real app, you'd also award points to the referrer here via a background function
+                initialPoints += 200;
                 localStorage.removeItem('paynix_referrer');
             }
 
-            const { error } = await supabaseApp.from('profiles').upsert({
+            await supabaseApp.from('profiles').upsert({
                 id: currentUser.id,
                 email: currentUser.email,
                 full_name: fullName,
                 points: currentProfile?.points || initialPoints
             }, { onConflict: 'id' });
-
-            if (error) console.warn("Profile sync issues:", error.message);
         }
 
         async function fetchUserData() {
@@ -184,8 +180,40 @@
             const { data: card } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
             userCard = card;
 
+            // Fetch History & Update Balance if Received money
+            await fetchTransactions();
+            
             if (currentPage === 'earn') renderEarnPage();
             else renderPortal();
+        }
+
+        async function fetchTransactions() {
+            if (!currentUser) return;
+            // Fetch both sent and received
+            const { data: sent } = await supabaseApp.from('transfers').select('*').eq('sender_id', currentUser.id);
+            const { data: received } = await supabaseApp.from('transfers').select('*').eq('recipient_email', currentUser.email);
+            
+            // Logic for auto-updating balance for received funds
+            if (received && userCard) {
+                let pendingIncrease = 0;
+                for (const item of received) {
+                    if (item.status === 'pending_claim') {
+                        pendingIncrease += parseFloat(item.amount);
+                        // Mark as claimed so we don't add it again next refresh
+                        await supabaseApp.from('transfers').update({ status: 'completed' }).eq('id', item.id);
+                    }
+                }
+                if (pendingIncrease > 0) {
+                    const newBal = parseFloat(userCard.balance) + pendingIncrease;
+                    await supabaseApp.from('cards').update({ balance: newBal }).eq('user_id', currentUser.id);
+                    userCard.balance = newBal;
+                }
+            }
+
+            transactions = [
+                ...(sent || []).map(t => ({ ...t, type: 'sent' })),
+                ...(received || []).map(t => ({ ...t, type: 'received' }))
+            ].sort((a, b) => new Date(b.created_at || Date.now()) - new Date(a.created_at || Date.now()));
         }
 
         function setupRealtimeListeners() {
@@ -209,54 +237,42 @@
                     status: 'active',
                     balance: 10.00
                 };
-
-                const { error } = await supabaseApp.from('cards').insert([cardData]);
+                await supabaseApp.from('cards').insert([cardData]);
                 await updatePoints(100); 
-
-                if (error) {
-                    userCard = cardData;
-                    renderCertificate(cardData);
-                } else {
-                    userCard = cardData;
-                    renderCertificate(cardData);
-                }
+                userCard = cardData;
+                renderCertificate(cardData);
             } catch (err) {
-                showCustomAlert("System Note", "Card generated in local session.");
                 renderPortal();
             }
         }
 
         async function updatePoints(amount) {
             const newPoints = (currentProfile?.points || 0) + amount;
-            const { error } = await supabaseApp.from('profiles').update({ points: newPoints }).eq('id', currentUser.id);
-            if (!error) {
-                currentProfile.points = newPoints;
-                updateNav();
-            }
+            await supabaseApp.from('profiles').update({ points: newPoints }).eq('id', currentUser.id);
+            currentProfile.points = newPoints;
+            updateNav();
         }
 
         async function convertPoints() {
             if (!currentProfile || currentProfile.points < 100) {
-                showCustomAlert("Insufficient Points", "You need at least 100 NixPoints to convert to 1 NixCoin ($1.00).");
+                showCustomAlert("Insufficient Points", "You need at least 100 NixPoints.");
                 return;
             }
             if (!userCard) {
-                showCustomAlert("No Card", "Please issue a card first to receive NixCoins.");
+                showCustomAlert("No Card", "Issue a card first.");
                 return;
             }
 
             renderLoading("Converting Points...");
-            const coinsToEarn = Math.floor(currentProfile.points / 100);
-            const pointsToDeduct = coinsToEarn * 100;
-            const dollarValue = coinsToEarn * 1.00;
+            const coins = Math.floor(currentProfile.points / 100);
+            const dollarValue = coins * 1.00;
 
             try {
-                await supabaseApp.from('profiles').update({ points: currentProfile.points - pointsToDeduct }).eq('id', currentUser.id);
+                await supabaseApp.from('profiles').update({ points: currentProfile.points - (coins * 100) }).eq('id', currentUser.id);
                 await supabaseApp.from('cards').update({ balance: parseFloat(userCard.balance) + dollarValue }).eq('user_id', currentUser.id);
-                showCustomAlert("Success!", `Converted ${pointsToDeduct} points into ${coinsToEarn} NixCoin ($${dollarValue.toFixed(2)}).`);
+                showCustomAlert("Success!", `Converted ${coins * 100} points into $${dollarValue.toFixed(2)}.`);
                 fetchUserData();
             } catch (e) {
-                showCustomAlert("Error", "Conversion failed. Please try again later.");
                 renderPortal();
             }
         }
@@ -265,40 +281,44 @@
             e.preventDefault();
             const recipient = document.getElementById('transfer-email').value;
             const amount = parseFloat(document.getElementById('transfer-amount').value);
+            
             if (amount > userCard.balance) {
-                showCustomAlert("Insufficient Funds", "Your card balance is too low for this transfer.");
+                showCustomAlert("Insufficient Funds", "Balance too low.");
                 return;
             }
-            renderLoading("Securing Transfer...");
-            setTimeout(async () => {
-                try {
-                    await supabaseApp.from('cards').update({ balance: userCard.balance - amount }).eq('user_id', currentUser.id);
-                    await updatePoints(20);
-                    showCustomAlert("Transfer Sent", `Successfully sent $${amount.toFixed(2)} to ${recipient}. You earned 20 NixPoints!`);
-                } catch(e) {
-                    showCustomAlert("Local Success", `Transferred $${amount.toFixed(2)} to ${recipient} (Demo mode).`);
-                }
+
+            renderLoading("Processing Transfer...");
+            try {
+                // Record the transfer
+                await supabaseApp.from('transfers').insert([{
+                    sender_id: currentUser.id,
+                    sender_email: currentUser.email,
+                    recipient_email: recipient,
+                    amount: amount,
+                    status: 'pending_claim'
+                }]);
+
+                // Update sender balance
+                await supabaseApp.from('cards').update({ balance: userCard.balance - amount }).eq('user_id', currentUser.id);
+                await updatePoints(20);
+                
+                showCustomAlert("Transfer Sent", `Successfully sent $${amount.toFixed(2)} to ${recipient}.`);
                 fetchUserData();
-            }, 1500);
+            } catch(e) {
+                showCustomAlert("Error", "Transfer failed.");
+                renderPortal();
+            }
         }
 
         function copyReferralLink() {
             const link = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
             const el = document.createElement('textarea');
-            el.value = link;
-            document.body.appendChild(el);
-            el.select();
-            document.execCommand('copy');
-            document.body.removeChild(el);
+            el.value = link; document.body.appendChild(el);
+            el.select(); document.execCommand('copy'); document.body.removeChild(el);
             
             const btn = document.getElementById('copy-ref-btn');
-            const originalText = btn.innerHTML;
             btn.innerHTML = '<i class="fas fa-check mr-2"></i> Copied!';
-            btn.classList.replace('bg-indigo-600', 'bg-emerald-600');
-            setTimeout(() => {
-                btn.innerHTML = originalText;
-                btn.classList.replace('bg-emerald-600', 'bg-indigo-600');
-            }, 2000);
+            setTimeout(() => { btn.innerHTML = 'Copy Link'; }, 2000);
         }
 
         function showCustomAlert(title, msg, onOk, icon = 'fa-info-circle') {
@@ -364,7 +384,7 @@
                 <div class="fade-in text-center py-20">
                     <span class="bg-indigo-500/10 text-indigo-400 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest mb-6 inline-block border border-indigo-500/20">Next-Gen Virtual Banking</span>
                     <h1 class="text-6xl md:text-8xl font-black mb-8 tracking-tighter leading-none text-white">Earn. Spend.<br/><span class="gradient-text">Convert Points.</span></h1>
-                    <p class="text-slate-400 max-w-2xl mx-auto mb-10 text-lg">Instant virtual Mastercards with a built-in rewards engine. Earn NixPoints for every move and convert them to real balance.</p>
+                    <p class="text-slate-400 max-w-2xl mx-auto mb-10 text-lg">Instant virtual Mastercards with built-in rewards. Join thousands already spending.</p>
                     <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:bg-indigo-700 transition shadow-2xl shadow-indigo-500/40">Start Earning Now</button>
                 </div>
             `;
@@ -380,15 +400,15 @@
                         <p class="text-slate-400 text-sm mt-2">Join today and earn 50 welcome points!</p>
                     </div>
                     <form onsubmit="${isLogin ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-4">
-                        ${!isLogin ? `<input type="text" id="fullname" required placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">` : ''}
-                        <input type="email" id="email" required placeholder="Email Address" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
-                        <input type="password" id="password" required placeholder="Password" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
-                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl transition shadow-xl shadow-indigo-500/20">
+                        ${!isLogin ? `<input type="text" id="fullname" required placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">` : ''}
+                        <input type="email" id="email" required placeholder="Email Address" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">
+                        <input type="password" id="password" required placeholder="Password" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white outline-none">
+                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-indigo-500/20">
                             ${isLogin ? 'Sign In' : 'Sign Up'}
                         </button>
                     </form>
                     <p class="mt-6 text-center text-sm text-slate-400">
-                        ${isLogin ? "New to PayNix? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Create account</span>" : "Have an account? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Log in</span>"}
+                        ${isLogin ? "New? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Create account</span>" : "Have account? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Log in</span>"}
                     </p>
                 </div>
             `;
@@ -396,14 +416,12 @@
 
         async function handleSignup(e) {
             e.preventDefault();
-            const btn = document.getElementById('auth-btn');
-            btn.innerText = 'Initializing...';
             const { error } = await supabaseApp.auth.signUp({ 
                 email: document.getElementById('email').value, 
                 password: document.getElementById('password').value, 
                 options: { data: { full_name: document.getElementById('fullname').value } }
             });
-            if (error) { showCustomAlert("Error", error.message); btn.innerText = 'Sign Up'; }
+            if (error) showCustomAlert("Error", error.message);
             else showCustomAlert("Success", "Check email for verification.");
         }
 
@@ -421,176 +439,108 @@
         function renderPortal() {
             updateNav();
             const app = document.getElementById('app-container');
-            const firstName = (currentProfile?.full_name || 'User').split(' ')[0];
-            
             if (!userCard) {
-                app.innerHTML = `
-                    <div class="fade-in max-w-2xl mx-auto py-12 text-center">
-                        <h2 class="text-4xl font-black text-white mb-4">Ready, ${firstName}?</h2>
-                        <p class="text-slate-400 mb-10">Issue your card now to earn your first 100 NixPoints!</p>
-                        <div class="bg-indigo-600/5 border border-indigo-500/20 rounded-3xl p-10 group">
-                            <button onclick="createCard()" id="create-btn" class="bg-indigo-600 text-white font-bold py-4 px-12 rounded-xl transition shadow-xl shadow-indigo-500/40 transform hover:scale-105">
-                                Generate Virtual Card (+100 Points)
-                            </button>
-                        </div>
-                    </div>
-                `;
-            } else {
-                const num = userCard.card_number.match(/.{1,4}/g).join(' ');
-                app.innerHTML = `
-                    <div class="fade-in max-w-6xl mx-auto">
-                        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                            <div class="lg:col-span-8 space-y-8">
-                                <div class="credit-card aspect-[1.586] w-full max-w-md mx-auto lg:mx-0 rounded-3xl p-8 text-white flex flex-col justify-between">
-                                    <div class="flex justify-between items-start">
-                                        <div class="text-xl font-black italic">PAYNIX</div>
-                                        <div class="flex flex-col items-end">
-                                            <i class="fab fa-cc-mastercard text-4xl opacity-90"></i>
-                                            <span class="text-[8px] tracking-[0.2em] font-bold mt-1">VIRTUAL GOLD</span>
-                                        </div>
-                                    </div>
-                                    <p class="font-mono text-2xl md:text-3xl tracking-widest text-center my-4">${num}</p>
-                                    <div class="flex justify-between items-end">
-                                        <div>
-                                            <p class="text-[10px] text-indigo-300 uppercase font-bold">Card Holder</p>
-                                            <p class="font-bold uppercase tracking-tight">${userCard.holder_name}</p>
-                                        </div>
-                                        <div class="text-right">
-                                            <p class="text-[10px] text-indigo-300 uppercase font-bold">CVV</p>
-                                            <p class="font-bold tracking-widest">${userCard.cvv}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
-                                        <h3 class="text-slate-500 text-xs font-black uppercase tracking-widest mb-2">Available Balance</h3>
-                                        <p class="text-5xl font-black text-white">$${parseFloat(userCard.balance).toFixed(2)}</p>
-                                        <div class="mt-6 flex gap-2">
-                                            <span class="bg-emerald-500/10 text-emerald-400 text-[10px] font-bold px-2 py-1 rounded uppercase">Verified</span>
-                                            <span class="bg-indigo-500/10 text-indigo-400 text-[10px] font-bold px-2 py-1 rounded uppercase">Instant Access</span>
-                                        </div>
-                                    </div>
-                                    <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
-                                        <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2"><i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer</h3>
-                                        <form onsubmit="handleTransfer(event)" class="space-y-3">
-                                            <input type="email" id="transfer-email" required placeholder="Recipient Email" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
-                                            <div class="relative">
-                                                <span class="absolute left-3 top-3 text-slate-500 text-sm">$</span>
-                                                <input type="number" id="transfer-amount" required step="0.01" placeholder="0.00" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 pl-7 text-sm text-white outline-none">
-                                            </div>
-                                            <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">Send Funds (+20 pts)</button>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="lg:col-span-4 space-y-6">
-                                <div class="bg-slate-800/60 p-8 rounded-3xl border border-slate-700 border-t-amber-500/50 relative overflow-hidden">
-                                    <div class="absolute -right-10 -top-10 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl"></div>
-                                    <div class="relative">
-                                        <h3 class="text-slate-400 text-xs font-black uppercase tracking-widest mb-6">NixPoints Rewards</h3>
-                                        <div class="flex items-center justify-between mb-8">
-                                            <div><p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p><p class="text-amber-500 text-xs font-bold">Total Accumulated</p></div>
-                                            <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg"><i class="fas fa-gem"></i></div>
-                                        </div>
-                                        <div class="space-y-4 mb-8">
-                                            <div class="flex items-center justify-between text-xs p-3 bg-slate-900/50 rounded-xl"><span class="text-slate-400">Next NixCoin at</span><span class="text-white font-bold">100 pts</span></div>
-                                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden"><div class="bg-amber-500 h-full transition-all" style="width: ${(currentProfile?.points % 100)}%"></div></div>
-                                        </div>
-                                        <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-amber-950 font-black rounded-2xl transition shadow-xl shadow-amber-500/20 flex items-center justify-center gap-2"><i class="fas fa-coins"></i> Convert to NixCoin</button>
-                                        <button onclick="navigateTo('earn')" class="w-full mt-4 py-3 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-xl transition uppercase tracking-widest">Boost My Points</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
+                app.innerHTML = `<div class="fade-in max-w-2xl mx-auto py-12 text-center"><h2 class="text-4xl font-black text-white mb-4">Ready?</h2><button onclick="createCard()" id="create-btn" class="bg-indigo-600 text-white font-bold py-4 px-12 rounded-xl transition transform hover:scale-105">Generate Virtual Card (+100 Points)</button></div>`;
+                return;
             }
+
+            const num = userCard.card_number.match(/.{1,4}/g).join(' ');
+            app.innerHTML = `
+                <div class="fade-in max-w-6xl mx-auto">
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                        <!-- Main Panel -->
+                        <div class="lg:col-span-8 space-y-8">
+                            <div class="credit-card aspect-[1.586] w-full max-w-md mx-auto lg:mx-0 rounded-3xl p-8 text-white flex flex-col justify-between">
+                                <div class="flex justify-between items-start">
+                                    <div class="text-xl font-black italic">PAYNIX</div>
+                                    <i class="fab fa-cc-mastercard text-4xl opacity-90"></i>
+                                </div>
+                                <p class="font-mono text-2xl tracking-widest text-center">${num}</p>
+                                <div class="flex justify-between items-end">
+                                    <div><p class="text-[10px] text-indigo-300 uppercase font-bold">Holder</p><p class="font-bold uppercase tracking-tight">${userCard.holder_name}</p></div>
+                                    <div class="text-right"><p class="text-[10px] text-indigo-300 uppercase font-bold">CVV</p><p class="font-bold tracking-widest">${userCard.cvv}</p></div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
+                                    <h3 class="text-slate-500 text-xs font-black uppercase mb-2">Available Balance</h3>
+                                    <p class="text-5xl font-black text-white">$${parseFloat(userCard.balance).toFixed(2)}</p>
+                                </div>
+                                <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
+                                    <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2"><i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer</h3>
+                                    <form onsubmit="handleTransfer(event)" class="space-y-3">
+                                        <input type="email" id="transfer-email" required placeholder="Recipient Email" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
+                                        <input type="number" id="transfer-amount" required step="0.01" placeholder="Amount $" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
+                                        <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">Send Funds (+20 pts)</button>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- Transaction History -->
+                            <div class="bg-slate-800/40 rounded-3xl border border-slate-700/50 overflow-hidden">
+                                <div class="p-6 border-b border-slate-700/50 flex items-center justify-between">
+                                    <h3 class="text-white font-bold flex items-center gap-2"><i class="fas fa-history text-indigo-400"></i> Recent Activity</h3>
+                                </div>
+                                <div class="max-h-[300px] overflow-y-auto scroll-hide">
+                                    ${transactions.length === 0 ? 
+                                        `<div class="p-10 text-center text-slate-500 text-sm italic">No recent transactions.</div>` : 
+                                        transactions.map(t => `
+                                            <div class="p-4 border-b border-slate-700/30 flex items-center justify-between hover:bg-slate-700/20 transition">
+                                                <div class="flex items-center gap-4">
+                                                    <div class="w-10 h-10 rounded-full flex items-center justify-center ${t.type === 'received' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}">
+                                                        <i class="fas ${t.type === 'received' ? 'fa-arrow-down' : 'fa-arrow-up'}"></i>
+                                                    </div>
+                                                    <div>
+                                                        <p class="text-white text-sm font-bold">${t.type === 'received' ? 'Received from ' + (t.sender_email || 'System') : 'Sent to ' + t.recipient_email}</p>
+                                                        <p class="text-[10px] text-slate-500 uppercase font-black">${new Date(t.created_at).toLocaleDateString()}</p>
+                                                    </div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <p class="font-black ${t.type === 'received' ? 'text-emerald-500' : 'text-slate-200'}">${t.type === 'received' ? '+' : '-'}$${parseFloat(t.amount).toFixed(2)}</p>
+                                                    <span class="text-[8px] bg-slate-700 px-2 py-0.5 rounded text-slate-300 uppercase">${t.status}</span>
+                                                </div>
+                                            </div>
+                                        `).join('')
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Sidebar -->
+                        <div class="lg:col-span-4 space-y-6">
+                            <div class="bg-slate-800/60 p-8 rounded-3xl border border-slate-700 border-t-amber-500/50 relative overflow-hidden">
+                                <h3 class="text-slate-400 text-xs font-black uppercase mb-6">NixPoints Rewards</h3>
+                                <div class="flex items-center justify-between mb-8">
+                                    <div><p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p><p class="text-amber-500 text-xs font-bold">Total Pts</p></div>
+                                    <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl"><i class="fas fa-gem"></i></div>
+                                </div>
+                                <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 text-amber-950 font-black rounded-2xl transition hover:bg-amber-600">Convert to Cash</button>
+                                <button onclick="navigateTo('earn')" class="w-full mt-4 py-3 bg-slate-700 text-white text-xs font-bold rounded-xl transition uppercase">Refer & Earn</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
         }
 
         function renderEarnPage() {
             updateNav();
             const app = document.getElementById('app-container');
             const refLink = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
-            
             app.innerHTML = `
                 <div class="fade-in max-w-4xl mx-auto">
                     <div class="flex items-center gap-4 mb-8">
-                        <button onclick="navigateTo('portal')" class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition">
-                            <i class="fas fa-arrow-left"></i>
-                        </button>
-                        <div>
-                            <h2 class="text-3xl font-black text-white">Boost NixPoints</h2>
-                            <p class="text-slate-400 text-sm">Every 100 points = 1 NixCoin ($1.00 USD)</p>
-                        </div>
+                        <button onclick="navigateTo('portal')" class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i class="fas fa-arrow-left"></i></button>
+                        <h2 class="text-3xl font-black text-white">Boost NixPoints</h2>
                     </div>
-
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <!-- Referral System -->
-                        <div class="referral-card p-10 rounded-[2rem] relative overflow-hidden">
-                            <div class="absolute -right-20 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
-                            <div class="relative z-10">
-                                <div class="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-2xl mb-6">
-                                    <i class="fas fa-users"></i>
-                                </div>
-                                <h3 class="text-2xl font-black text-white mb-2">Refer a Friend</h3>
-                                <p class="text-slate-400 text-sm mb-8 leading-relaxed">
-                                    Invite your friends to PayNix and you'll both receive <span class="text-amber-500 font-bold">200 NixPoints</span> ($2.00) instantly upon their successful registration.
-                                </p>
-                                
-                                <div class="bg-slate-900/80 border border-slate-700 p-4 rounded-2xl mb-6">
-                                    <p class="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Your Unique Link</p>
-                                    <div class="flex items-center gap-3 overflow-hidden">
-                                        <p class="text-xs text-indigo-400 font-mono truncate flex-grow">${refLink}</p>
-                                        <button id="copy-ref-btn" onclick="copyReferralLink()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-4 py-2 rounded-lg transition whitespace-nowrap">
-                                            Copy Link
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="flex items-center gap-2 text-emerald-400 text-xs font-bold">
-                                    <i class="fas fa-check-circle"></i>
-                                    <span>Unlimited referrals available</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Other Ways to Earn -->
-                        <div class="space-y-4">
-                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6">
-                                <div class="w-12 h-12 bg-amber-500/20 text-amber-500 rounded-xl flex items-center justify-center text-xl">
-                                    <i class="fas fa-credit-card"></i>
-                                </div>
-                                <div>
-                                    <p class="text-white font-bold">Card Generation</p>
-                                    <p class="text-slate-500 text-xs">Issue your first card</p>
-                                </div>
-                                <span class="ml-auto text-amber-500 font-black">+100</span>
-                            </div>
-
-                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6 opacity-60">
-                                <div class="w-12 h-12 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center text-xl">
-                                    <i class="fas fa-mobile-alt"></i>
-                                </div>
-                                <div>
-                                    <p class="text-white font-bold">Mobile App Login</p>
-                                    <p class="text-slate-500 text-xs">Coming to iOS & Android</p>
-                                </div>
-                                <span class="ml-auto text-slate-500 font-black">+500</span>
-                            </div>
-
-                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6">
-                                <div class="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center text-xl">
-                                    <i class="fas fa-exchange-alt"></i>
-                                </div>
-                                <div>
-                                    <p class="text-white font-bold">Wallet Transfer</p>
-                                    <p class="text-slate-500 text-xs">Send funds to friends</p>
-                                </div>
-                                <span class="ml-auto text-emerald-500 font-black">+20</span>
-                            </div>
-
-                            <div class="bg-indigo-600/10 border border-indigo-500/20 p-8 rounded-3xl text-center">
-                                <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest mb-2">Pro Tip</p>
-                                <p class="text-slate-300 text-sm">Convert your points into NixCoins to increase your Card Balance instantly!</p>
+                        <div class="referral-card p-10 rounded-[2rem]">
+                            <h3 class="text-2xl font-black text-white mb-2">Refer a Friend</h3>
+                            <p class="text-slate-400 text-sm mb-8">Both receive <span class="text-amber-500 font-bold">200 NixPoints</span> ($2.00) instantly.</p>
+                            <div class="bg-slate-900/80 border border-slate-700 p-4 rounded-2xl mb-6">
+                                <p class="text-[10px] text-indigo-400 font-mono truncate mb-2">${refLink}</p>
+                                <button id="copy-ref-btn" onclick="copyReferralLink()" class="bg-indigo-600 text-white text-[10px] font-bold px-4 py-2 rounded-lg">Copy Link</button>
                             </div>
                         </div>
                     </div>
@@ -599,21 +549,14 @@
         }
 
         function renderCertificate(card) {
-            const app = document.getElementById('app-container');
-            app.innerHTML = `
+            document.getElementById('app-container').innerHTML = `
                 <div class="fade-in max-w-xl mx-auto py-10">
-                    <div class="bg-slate-800 border-4 border-double border-indigo-500 p-12 text-center rounded shadow-2xl relative">
-                        <div class="absolute -top-6 left-1/2 -translate-x-1/2 bg-indigo-500 text-white text-[10px] font-black px-4 py-2 rounded-full uppercase tracking-[0.3em]">Official Issuance</div>
-                        <h1 class="text-2xl font-black text-white mb-6 uppercase tracking-tighter">Mastercard Generated</h1>
+                    <div class="bg-slate-800 border-4 border-double border-indigo-500 p-12 text-center rounded shadow-2xl">
+                        <h1 class="text-2xl font-black text-white mb-6 uppercase">Mastercard Issued</h1>
                         <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700 mb-8 text-left">
-                            <p class="text-[10px] text-indigo-500 font-bold uppercase mb-4 tracking-widest">Digital Asset Token</p>
-                            <p class="text-2xl font-mono text-white mb-4 tracking-widest">${card.card_number.match(/.{1,4}/g).join(' ')}</p>
-                            <div class="flex justify-between border-t border-slate-800 pt-4">
-                                <div><p class="text-[10px] text-slate-500 font-bold">CVV</p><p class="text-white font-bold">${card.cvv}</p></div>
-                                <div class="text-right"><p class="text-[10px] text-slate-500 font-bold">POINTS EARNED</p><p class="text-amber-500 font-bold">+100</p></div>
-                            </div>
+                            <p class="text-2xl font-mono text-white tracking-widest">${card.card_number.match(/.{1,4}/g).join(' ')}</p>
                         </div>
-                        <button onclick="renderPortal()" class="bg-indigo-600 text-white font-bold py-4 w-full rounded-xl shadow-lg shadow-indigo-500/30">Activate Dashboard</button>
+                        <button onclick="renderPortal()" class="bg-indigo-600 text-white font-bold py-4 w-full rounded-xl">Go to Dashboard</button>
                     </div>
                 </div>
             `;
