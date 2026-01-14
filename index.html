@@ -37,6 +37,11 @@
             background: linear-gradient(45deg, #f59e0b, #d97706);
             box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
         }
+
+        .referral-card {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
     </style>
 </head>
 <body class="bg-[#0f172a] text-slate-200 min-h-screen flex flex-col">
@@ -97,6 +102,7 @@
         let currentProfile = null;
         let userCard = null;
         let cardSubscription = null;
+        let currentPage = 'index';
 
         async function withRetry(fn, retries = 3) {
             for (let i = 0; i < retries; i++) {
@@ -109,6 +115,11 @@
 
         async function init() {
             try {
+                // Check if there is a referral in the URL
+                const urlParams = new URLSearchParams(window.location.search);
+                const ref = urlParams.get('ref');
+                if (ref) localStorage.setItem('paynix_referrer', ref);
+
                 const { data: { session }, error } = await supabaseApp.auth.getSession();
                 if (error) throw error;
                 handleSession(session);
@@ -143,16 +154,26 @@
             if (!currentUser) return;
             const fullName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Member';
             
-            // Check if profile exists, if not, create with default points
+            // Handle Referral Logic on First Sync
+            let initialPoints = 50; // Base welcome points
+            const storedReferrer = localStorage.getItem('paynix_referrer');
+            
+            const { data: existing } = await supabaseApp.from('profiles').select('id').eq('id', currentUser.id).maybeSingle();
+            
+            if (!existing && storedReferrer) {
+                initialPoints += 200; // Bonus for being referred
+                // Note: In a real app, you'd also award points to the referrer here via a background function
+                localStorage.removeItem('paynix_referrer');
+            }
+
             const { error } = await supabaseApp.from('profiles').upsert({
                 id: currentUser.id,
                 email: currentUser.email,
                 full_name: fullName,
-                // If points column doesn't exist, this might fail, but handle gracefully
-                points: currentProfile?.points || 50 // Welcome points
+                points: currentProfile?.points || initialPoints
             }, { onConflict: 'id' });
 
-            if (error) console.warn("Profile sync had issues (likely schema mismatch):", error.message);
+            if (error) console.warn("Profile sync issues:", error.message);
         }
 
         async function fetchUserData() {
@@ -163,7 +184,8 @@
             const { data: card } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
             userCard = card;
 
-            renderPortal();
+            if (currentPage === 'earn') renderEarnPage();
+            else renderPortal();
         }
 
         function setupRealtimeListeners() {
@@ -189,8 +211,6 @@
                 };
 
                 const { error } = await supabaseApp.from('cards').insert([cardData]);
-                
-                // Earn points for card creation
                 await updatePoints(100); 
 
                 if (error) {
@@ -209,7 +229,10 @@
         async function updatePoints(amount) {
             const newPoints = (currentProfile?.points || 0) + amount;
             const { error } = await supabaseApp.from('profiles').update({ points: newPoints }).eq('id', currentUser.id);
-            if (!error) currentProfile.points = newPoints;
+            if (!error) {
+                currentProfile.points = newPoints;
+                updateNav();
+            }
         }
 
         async function convertPoints() {
@@ -217,24 +240,19 @@
                 showCustomAlert("Insufficient Points", "You need at least 100 NixPoints to convert to 1 NixCoin ($1.00).");
                 return;
             }
-
             if (!userCard) {
                 showCustomAlert("No Card", "Please issue a card first to receive NixCoins.");
                 return;
             }
 
             renderLoading("Converting Points...");
-            
             const coinsToEarn = Math.floor(currentProfile.points / 100);
             const pointsToDeduct = coinsToEarn * 100;
             const dollarValue = coinsToEarn * 1.00;
 
             try {
-                // Update Points
                 await supabaseApp.from('profiles').update({ points: currentProfile.points - pointsToDeduct }).eq('id', currentUser.id);
-                // Update Balance
                 await supabaseApp.from('cards').update({ balance: parseFloat(userCard.balance) + dollarValue }).eq('user_id', currentUser.id);
-                
                 showCustomAlert("Success!", `Converted ${pointsToDeduct} points into ${coinsToEarn} NixCoin ($${dollarValue.toFixed(2)}).`);
                 fetchUserData();
             } catch (e) {
@@ -247,25 +265,40 @@
             e.preventDefault();
             const recipient = document.getElementById('transfer-email').value;
             const amount = parseFloat(document.getElementById('transfer-amount').value);
-
             if (amount > userCard.balance) {
                 showCustomAlert("Insufficient Funds", "Your card balance is too low for this transfer.");
                 return;
             }
-
             renderLoading("Securing Transfer...");
-            
-            // Mock transfer logic for demo
             setTimeout(async () => {
                 try {
                     await supabaseApp.from('cards').update({ balance: userCard.balance - amount }).eq('user_id', currentUser.id);
-                    await updatePoints(20); // Earn points for transferring
+                    await updatePoints(20);
                     showCustomAlert("Transfer Sent", `Successfully sent $${amount.toFixed(2)} to ${recipient}. You earned 20 NixPoints!`);
                 } catch(e) {
                     showCustomAlert("Local Success", `Transferred $${amount.toFixed(2)} to ${recipient} (Demo mode).`);
                 }
                 fetchUserData();
             }, 1500);
+        }
+
+        function copyReferralLink() {
+            const link = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
+            const el = document.createElement('textarea');
+            el.value = link;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            
+            const btn = document.getElementById('copy-ref-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check mr-2"></i> Copied!';
+            btn.classList.replace('bg-indigo-600', 'bg-emerald-600');
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.replace('bg-emerald-600', 'bg-indigo-600');
+            }, 2000);
         }
 
         function showCustomAlert(title, msg, onOk, icon = 'fa-info-circle') {
@@ -281,9 +314,11 @@
         }
 
         function navigateTo(page, params = {}) {
+            currentPage = page;
             if (page === 'index') currentUser ? renderPortal() : renderIndex();
             else if (page === 'auth') renderAuth(params.mode || 'login');
             else if (page === 'portal') currentUser ? renderPortal() : renderAuth('login');
+            else if (page === 'earn') currentUser ? renderEarnPage() : renderAuth('login');
         }
 
         function updateNav() {
@@ -291,6 +326,9 @@
             if (currentUser) {
                 nav.innerHTML = `
                     <div class="flex items-center gap-4 fade-in">
+                        <button onclick="navigateTo('earn')" class="hidden sm:flex items-center gap-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-amber-500/20 transition">
+                            <i class="fas fa-gift"></i> Earn Points
+                        </button>
                         <div class="hidden md:flex flex-col items-end">
                             <span class="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">NixPoints</span>
                             <span class="text-sm font-bold text-white flex items-center gap-1">
@@ -339,7 +377,7 @@
                 <div class="fade-in max-w-md mx-auto p-10 bg-slate-800/50 rounded-3xl border border-slate-700/50 shadow-2xl">
                     <div class="text-center mb-8">
                         <h2 class="text-3xl font-black text-white">${isLogin ? 'Welcome Back' : 'Create Account'}</h2>
-                        <p class="text-slate-400 text-sm mt-2">Get 50 Welcome Points upon joining</p>
+                        <p class="text-slate-400 text-sm mt-2">Join today and earn 50 welcome points!</p>
                     </div>
                     <form onsubmit="${isLogin ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-4">
                         ${!isLogin ? `<input type="text" id="fullname" required placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">` : ''}
@@ -402,8 +440,6 @@
                 app.innerHTML = `
                     <div class="fade-in max-w-6xl mx-auto">
                         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                            
-                            <!-- Left: Card & Balance -->
                             <div class="lg:col-span-8 space-y-8">
                                 <div class="credit-card aspect-[1.586] w-full max-w-md mx-auto lg:mx-0 rounded-3xl p-8 text-white flex flex-col justify-between">
                                     <div class="flex justify-between items-start">
@@ -425,7 +461,6 @@
                                         </div>
                                     </div>
                                 </div>
-
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
                                         <h3 class="text-slate-500 text-xs font-black uppercase tracking-widest mb-2">Available Balance</h3>
@@ -435,82 +470,132 @@
                                             <span class="bg-indigo-500/10 text-indigo-400 text-[10px] font-bold px-2 py-1 rounded uppercase">Instant Access</span>
                                         </div>
                                     </div>
-
-                                    <!-- Transfer Form -->
                                     <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
-                                        <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2">
-                                            <i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer
-                                        </h3>
+                                        <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2"><i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer</h3>
                                         <form onsubmit="handleTransfer(event)" class="space-y-3">
                                             <input type="email" id="transfer-email" required placeholder="Recipient Email" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
                                             <div class="relative">
                                                 <span class="absolute left-3 top-3 text-slate-500 text-sm">$</span>
                                                 <input type="number" id="transfer-amount" required step="0.01" placeholder="0.00" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 pl-7 text-sm text-white outline-none">
                                             </div>
-                                            <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">
-                                                Send Funds (+20 pts)
-                                            </button>
+                                            <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">Send Funds (+20 pts)</button>
                                         </form>
                                     </div>
                                 </div>
                             </div>
-
-                            <!-- Right: Points & Rewards -->
                             <div class="lg:col-span-4 space-y-6">
                                 <div class="bg-slate-800/60 p-8 rounded-3xl border border-slate-700 border-t-amber-500/50 relative overflow-hidden">
                                     <div class="absolute -right-10 -top-10 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl"></div>
                                     <div class="relative">
                                         <h3 class="text-slate-400 text-xs font-black uppercase tracking-widest mb-6">NixPoints Rewards</h3>
                                         <div class="flex items-center justify-between mb-8">
-                                            <div>
-                                                <p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p>
-                                                <p class="text-amber-500 text-xs font-bold">Total Accumulated</p>
-                                            </div>
-                                            <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg">
-                                                <i class="fas fa-gem"></i>
-                                            </div>
+                                            <div><p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p><p class="text-amber-500 text-xs font-bold">Total Accumulated</p></div>
+                                            <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg"><i class="fas fa-gem"></i></div>
                                         </div>
-
                                         <div class="space-y-4 mb-8">
-                                            <div class="flex items-center justify-between text-xs p-3 bg-slate-900/50 rounded-xl">
-                                                <span class="text-slate-400">Next NixCoin at</span>
-                                                <span class="text-white font-bold">100 pts</span>
-                                            </div>
-                                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
-                                                <div class="bg-amber-500 h-full transition-all" style="width: ${(currentProfile?.points % 100)}%"></div>
-                                            </div>
+                                            <div class="flex items-center justify-between text-xs p-3 bg-slate-900/50 rounded-xl"><span class="text-slate-400">Next NixCoin at</span><span class="text-white font-bold">100 pts</span></div>
+                                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden"><div class="bg-amber-500 h-full transition-all" style="width: ${(currentProfile?.points % 100)}%"></div></div>
                                         </div>
-
-                                        <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-amber-950 font-black rounded-2xl transition shadow-xl shadow-amber-500/20 flex items-center justify-center gap-2">
-                                            <i class="fas fa-coins"></i> Convert to NixCoin
-                                        </button>
-                                        <p class="text-[10px] text-center text-slate-500 mt-3">100 points = 1 NixCoin ($1.00 USD)</p>
+                                        <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-amber-950 font-black rounded-2xl transition shadow-xl shadow-amber-500/20 flex items-center justify-center gap-2"><i class="fas fa-coins"></i> Convert to NixCoin</button>
+                                        <button onclick="navigateTo('earn')" class="w-full mt-4 py-3 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-xl transition uppercase tracking-widest">Boost My Points</button>
                                     </div>
                                 </div>
-
-                                <div class="bg-slate-800/30 p-6 rounded-3xl border border-slate-700/50">
-                                    <h4 class="text-white text-xs font-bold uppercase mb-4 tracking-wider">How to earn</h4>
-                                    <ul class="space-y-4">
-                                        <li class="flex items-center gap-3 text-xs">
-                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">1</span>
-                                            <span class="text-slate-400">Issue a card <b class="text-slate-200">+100 pts</b></span>
-                                        </li>
-                                        <li class="flex items-center gap-3 text-xs">
-                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">2</span>
-                                            <span class="text-slate-400">Every transfer <b class="text-slate-200">+20 pts</b></span>
-                                        </li>
-                                        <li class="flex items-center gap-3 text-xs">
-                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">3</span>
-                                            <span class="text-slate-400">Top-up balance <b class="text-slate-200">+50 pts</b></span>
-                                        </li>
-                                    </ul>
-                                </div>
                             </div>
-
                         </div>
                     </div>
                 `;
             }
+        }
+
+        function renderEarnPage() {
+            updateNav();
+            const app = document.getElementById('app-container');
+            const refLink = `${window.location.origin}${window.location.pathname}?ref=${currentUser.id}`;
+            
+            app.innerHTML = `
+                <div class="fade-in max-w-4xl mx-auto">
+                    <div class="flex items-center gap-4 mb-8">
+                        <button onclick="navigateTo('portal')" class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition">
+                            <i class="fas fa-arrow-left"></i>
+                        </button>
+                        <div>
+                            <h2 class="text-3xl font-black text-white">Boost NixPoints</h2>
+                            <p class="text-slate-400 text-sm">Every 100 points = 1 NixCoin ($1.00 USD)</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <!-- Referral System -->
+                        <div class="referral-card p-10 rounded-[2rem] relative overflow-hidden">
+                            <div class="absolute -right-20 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
+                            <div class="relative z-10">
+                                <div class="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-2xl mb-6">
+                                    <i class="fas fa-users"></i>
+                                </div>
+                                <h3 class="text-2xl font-black text-white mb-2">Refer a Friend</h3>
+                                <p class="text-slate-400 text-sm mb-8 leading-relaxed">
+                                    Invite your friends to PayNix and you'll both receive <span class="text-amber-500 font-bold">200 NixPoints</span> ($2.00) instantly upon their successful registration.
+                                </p>
+                                
+                                <div class="bg-slate-900/80 border border-slate-700 p-4 rounded-2xl mb-6">
+                                    <p class="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Your Unique Link</p>
+                                    <div class="flex items-center gap-3 overflow-hidden">
+                                        <p class="text-xs text-indigo-400 font-mono truncate flex-grow">${refLink}</p>
+                                        <button id="copy-ref-btn" onclick="copyReferralLink()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-4 py-2 rounded-lg transition whitespace-nowrap">
+                                            Copy Link
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2 text-emerald-400 text-xs font-bold">
+                                    <i class="fas fa-check-circle"></i>
+                                    <span>Unlimited referrals available</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Other Ways to Earn -->
+                        <div class="space-y-4">
+                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6">
+                                <div class="w-12 h-12 bg-amber-500/20 text-amber-500 rounded-xl flex items-center justify-center text-xl">
+                                    <i class="fas fa-credit-card"></i>
+                                </div>
+                                <div>
+                                    <p class="text-white font-bold">Card Generation</p>
+                                    <p class="text-slate-500 text-xs">Issue your first card</p>
+                                </div>
+                                <span class="ml-auto text-amber-500 font-black">+100</span>
+                            </div>
+
+                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6 opacity-60">
+                                <div class="w-12 h-12 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center text-xl">
+                                    <i class="fas fa-mobile-alt"></i>
+                                </div>
+                                <div>
+                                    <p class="text-white font-bold">Mobile App Login</p>
+                                    <p class="text-slate-500 text-xs">Coming to iOS & Android</p>
+                                </div>
+                                <span class="ml-auto text-slate-500 font-black">+500</span>
+                            </div>
+
+                            <div class="bg-slate-800/40 border border-slate-700 p-6 rounded-3xl flex items-center gap-6">
+                                <div class="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center text-xl">
+                                    <i class="fas fa-exchange-alt"></i>
+                                </div>
+                                <div>
+                                    <p class="text-white font-bold">Wallet Transfer</p>
+                                    <p class="text-slate-500 text-xs">Send funds to friends</p>
+                                </div>
+                                <span class="ml-auto text-emerald-500 font-black">+20</span>
+                            </div>
+
+                            <div class="bg-indigo-600/10 border border-indigo-500/20 p-8 rounded-3xl text-center">
+                                <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest mb-2">Pro Tip</p>
+                                <p class="text-slate-300 text-sm">Convert your points into NixCoins to increase your Card Balance instantly!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
         }
 
         function renderCertificate(card) {
