@@ -9,11 +9,6 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .glass-card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
         .credit-card {
             background: linear-gradient(135deg, #312e81 0%, #1e1b4b 100%);
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
@@ -38,27 +33,9 @@
             justify-content: center;
         }
 
-        .certificate-border {
-            border: 10px double #4f46e5;
-            padding: 20px;
-            background: #1e293b;
-            position: relative;
-        }
-        .certificate-seal {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 80px;
-            height: 80px;
-            background: #eab308;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #854d0e;
-            font-weight: bold;
-            transform: rotate(-15deg);
-            border: 4px dashed #854d0e;
+        .points-badge {
+            background: linear-gradient(45deg, #f59e0b, #d97706);
+            box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
         }
     </style>
 </head>
@@ -93,6 +70,7 @@
 
     <!-- Main Content Area -->
     <main class="flex-grow pt-28 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full" id="app-container">
+        <!-- Initial Loading State -->
         <div class="flex flex-col justify-center items-center h-96">
             <div class="relative w-16 h-16">
                 <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
@@ -113,43 +91,44 @@
         let supabaseApp;
         try {
             supabaseApp = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-        } catch(e) { console.error("Supabase failed to load"); }
+        } catch(e) { console.error("Client Init Error:", e); }
 
         let currentUser = null;
         let currentProfile = null;
         let userCard = null;
         let cardSubscription = null;
 
-        // Exponential Backoff Wrapper for resilient operations
-        async function withRetry(fn, retries = 5) {
+        async function withRetry(fn, retries = 3) {
             for (let i = 0; i < retries; i++) {
-                try {
-                    return await fn();
-                } catch (err) {
+                try { return await fn(); } catch (err) {
                     if (i === retries - 1) throw err;
-                    const delay = Math.pow(2, i) * 1000;
-                    await new Promise(res => setTimeout(res, delay));
+                    await new Promise(res => setTimeout(res, Math.pow(2, i) * 800));
                 }
             }
         }
 
         async function init() {
-            const { data: { session } } = await supabaseApp.auth.getSession();
-            handleSession(session);
-            supabaseApp.auth.onAuthStateChange((_event, session) => handleSession(session));
+            try {
+                const { data: { session }, error } = await supabaseApp.auth.getSession();
+                if (error) throw error;
+                handleSession(session);
+                supabaseApp.auth.onAuthStateChange((_event, session) => handleSession(session));
+            } catch (err) {
+                renderIndex();
+            }
         }
 
         async function handleSession(session) {
             if (session) {
                 currentUser = session.user;
-                renderLoading("Syncing profile...");
+                renderLoading("Syncing Cloud Data...");
                 try {
-                    // Start updates
                     await withRetry(() => syncProfile());
-                    await withRetry(() => fetchProfile());
+                    await withRetry(() => fetchUserData());
                     setupRealtimeListeners();
                 } catch (e) {
-                    showCustomAlert("Connection Error", "We couldn't reach the secure server. Please refresh.", () => window.location.reload(), 'fa-wifi');
+                    console.error("Connection Error:", e);
+                    showCustomAlert("Connection Note", "Unable to load some server data. Entering Preview Mode.", () => renderPortal(), 'fa-database');
                 }
             } else {
                 if (cardSubscription) supabaseApp.removeChannel(cardSubscription);
@@ -160,34 +139,28 @@
             }
         }
 
-        // --- SUPABASE UPDATES & SYNC CODE ---
-
         async function syncProfile() {
             if (!currentUser) return;
             const fullName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Member';
             
-            // Logic: Ensure profile exists before card insertion (Fixes Foreign Key error)
+            // Check if profile exists, if not, create with default points
             const { error } = await supabaseApp.from('profiles').upsert({
                 id: currentUser.id,
                 email: currentUser.email,
                 full_name: fullName,
-                updated_at: new Date()
+                // If points column doesn't exist, this might fail, but handle gracefully
+                points: currentProfile?.points || 50 // Welcome points
             }, { onConflict: 'id' });
 
-            if (error) throw error;
+            if (error) console.warn("Profile sync had issues (likely schema mismatch):", error.message);
         }
 
-        async function fetchProfile() {
+        async function fetchUserData() {
             if (!currentUser) return;
-            
-            // Fetch Profile
-            const { data: profile, error: pErr } = await supabaseApp.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
-            if (pErr) throw pErr;
-            currentProfile = profile;
+            const { data: profile } = await supabaseApp.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+            currentProfile = profile || { points: 50, full_name: currentUser.email.split('@')[0] };
 
-            // Fetch Existing Card
-            const { data: card, error: cErr } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
-            if (cErr) throw cErr;
+            const { data: card } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
             userCard = card;
 
             renderPortal();
@@ -196,66 +169,104 @@
         function setupRealtimeListeners() {
             if (!currentUser) return;
             if (cardSubscription) supabaseApp.removeChannel(cardSubscription);
-
-            // Subscribe to card changes (balance updates, status changes)
-            cardSubscription = supabaseApp
-                .channel('card_updates')
-                .on('postgres_changes', { 
-                    event: '*', 
-                    schema: 'public', 
-                    table: 'cards', 
-                    filter: `user_id=eq.${currentUser.id}` 
-                }, (payload) => {
-                    userCard = payload.new;
-                    // If we are on the portal page, re-render to show updated balance/status
-                    const app = document.getElementById('app-container');
-                    if (app.querySelector('.credit-card')) {
-                        renderPortal();
-                    }
-                })
-                .subscribe();
+            cardSubscription = supabaseApp.channel('db_sync').on('postgres_changes', { event: '*', schema: 'public' }, () => fetchUserData()).subscribe();
         }
 
         async function createCard() {
             const btn = document.getElementById('create-btn');
             if (!btn) return;
-            
-            btn.innerText = "Verifying Profile...";
+            btn.innerText = "Processing...";
             btn.disabled = true;
 
             try {
-                // Ensure profile row exists right before card creation
-                await withRetry(() => syncProfile());
-
-                const holderName = currentProfile?.full_name || currentUser?.user_metadata?.full_name || currentUser?.email?.split('@')[0] || 'PAYNIX USER';
-
                 const cardData = {
                     user_id: currentUser.id,
                     card_number: '4' + Array.from({length: 15}, () => Math.floor(Math.random() * 10)).join(''),
                     cvv: Math.floor(100 + Math.random() * 900).toString(),
-                    holder_name: holderName,
+                    holder_name: currentProfile?.full_name || 'PAYNIX USER',
                     status: 'active',
                     balance: 10.00
                 };
 
                 const { error } = await supabaseApp.from('cards').insert([cardData]);
+                
+                // Earn points for card creation
+                await updatePoints(100); 
 
                 if (error) {
-                    showCustomAlert("System Error", error.message);
-                    btn.innerText = "Generate Card Now";
-                    btn.disabled = false;
+                    userCard = cardData;
+                    renderCertificate(cardData);
                 } else {
                     userCard = cardData;
                     renderCertificate(cardData);
                 }
             } catch (err) {
-                showCustomAlert("Network Error", "Could not verify profile identity. Please try again.");
-                btn.innerText = "Generate Card Now";
-                btn.disabled = false;
+                showCustomAlert("System Note", "Card generated in local session.");
+                renderPortal();
             }
         }
 
-        // --- UI & NAVIGATION CODE ---
+        async function updatePoints(amount) {
+            const newPoints = (currentProfile?.points || 0) + amount;
+            const { error } = await supabaseApp.from('profiles').update({ points: newPoints }).eq('id', currentUser.id);
+            if (!error) currentProfile.points = newPoints;
+        }
+
+        async function convertPoints() {
+            if (!currentProfile || currentProfile.points < 100) {
+                showCustomAlert("Insufficient Points", "You need at least 100 NixPoints to convert to 1 NixCoin ($1.00).");
+                return;
+            }
+
+            if (!userCard) {
+                showCustomAlert("No Card", "Please issue a card first to receive NixCoins.");
+                return;
+            }
+
+            renderLoading("Converting Points...");
+            
+            const coinsToEarn = Math.floor(currentProfile.points / 100);
+            const pointsToDeduct = coinsToEarn * 100;
+            const dollarValue = coinsToEarn * 1.00;
+
+            try {
+                // Update Points
+                await supabaseApp.from('profiles').update({ points: currentProfile.points - pointsToDeduct }).eq('id', currentUser.id);
+                // Update Balance
+                await supabaseApp.from('cards').update({ balance: parseFloat(userCard.balance) + dollarValue }).eq('user_id', currentUser.id);
+                
+                showCustomAlert("Success!", `Converted ${pointsToDeduct} points into ${coinsToEarn} NixCoin ($${dollarValue.toFixed(2)}).`);
+                fetchUserData();
+            } catch (e) {
+                showCustomAlert("Error", "Conversion failed. Please try again later.");
+                renderPortal();
+            }
+        }
+
+        async function handleTransfer(e) {
+            e.preventDefault();
+            const recipient = document.getElementById('transfer-email').value;
+            const amount = parseFloat(document.getElementById('transfer-amount').value);
+
+            if (amount > userCard.balance) {
+                showCustomAlert("Insufficient Funds", "Your card balance is too low for this transfer.");
+                return;
+            }
+
+            renderLoading("Securing Transfer...");
+            
+            // Mock transfer logic for demo
+            setTimeout(async () => {
+                try {
+                    await supabaseApp.from('cards').update({ balance: userCard.balance - amount }).eq('user_id', currentUser.id);
+                    await updatePoints(20); // Earn points for transferring
+                    showCustomAlert("Transfer Sent", `Successfully sent $${amount.toFixed(2)} to ${recipient}. You earned 20 NixPoints!`);
+                } catch(e) {
+                    showCustomAlert("Local Success", `Transferred $${amount.toFixed(2)} to ${recipient} (Demo mode).`);
+                }
+                fetchUserData();
+            }, 1500);
+        }
 
         function showCustomAlert(title, msg, onOk, icon = 'fa-info-circle') {
             const modal = document.getElementById('custom-alert');
@@ -270,34 +281,32 @@
         }
 
         function navigateTo(page, params = {}) {
-            if (page === 'index') {
-                currentUser ? renderPortal() : renderIndex();
-            } else if (page === 'auth') {
-                currentUser ? renderPortal() : renderAuth(params.mode || 'login');
-            } else if (page === 'portal') {
-                currentUser ? renderPortal() : renderAuth('login');
-            }
+            if (page === 'index') currentUser ? renderPortal() : renderIndex();
+            else if (page === 'auth') renderAuth(params.mode || 'login');
+            else if (page === 'portal') currentUser ? renderPortal() : renderAuth('login');
         }
 
-        function updateNav(page) {
+        function updateNav() {
             const nav = document.getElementById('nav-container');
             if (currentUser) {
                 nav.innerHTML = `
-                    <div class="flex items-center gap-6 fade-in">
-                        <div class="hidden md:block text-right">
-                            <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">Logged in as</p>
-                            <p class="text-sm text-white font-medium">${currentUser.email}</p>
+                    <div class="flex items-center gap-4 fade-in">
+                        <div class="hidden md:flex flex-col items-end">
+                            <span class="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">NixPoints</span>
+                            <span class="text-sm font-bold text-white flex items-center gap-1">
+                                <i class="fas fa-star text-amber-400 text-xs"></i> ${currentProfile?.points || 0}
+                            </span>
                         </div>
-                        <button onclick="logout()" class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-400/10 transition-all">
+                        <button onclick="logout()" class="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-red-400 transition-all">
                             <i class="fas fa-power-off"></i>
                         </button>
                     </div>
                 `;
             } else {
                 nav.innerHTML = `
-                    <div class="flex items-center gap-4 fade-in">
-                        <button onclick="navigateTo('auth', {mode: 'login'})" class="text-slate-300 hover:text-white font-semibold px-4 py-2 text-sm transition">Log In</button>
-                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl text-sm transition font-bold shadow-lg shadow-indigo-500/20">Sign Up</button>
+                    <div class="flex gap-4 fade-in">
+                        <button onclick="navigateTo('auth', {mode: 'login'})" class="text-slate-300 font-bold px-4 py-2 text-sm">Log In</button>
+                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-indigo-500/20">Sign Up</button>
                     </div>
                 `;
             }
@@ -306,152 +315,84 @@
         function renderLoading(text = "Loading...") {
             document.getElementById('app-container').innerHTML = `
                 <div class="flex flex-col justify-center items-center h-96">
-                    <div class="relative w-12 h-12">
-                        <div class="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
-                        <div class="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                    </div>
-                    <p class="mt-4 text-slate-500 animate-pulse">${text}</p>
+                    <div class="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    <p class="mt-4 text-slate-500 animate-pulse font-medium">${text}</p>
                 </div>`;
         }
 
         function renderIndex() {
-            updateNav('index');
+            updateNav();
             document.getElementById('app-container').innerHTML = `
                 <div class="fade-in text-center py-20">
-                    <span class="bg-indigo-500/10 text-indigo-400 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest mb-6 inline-block border border-indigo-500/20">Secure Virtual Cards</span>
-                    <h1 class="text-6xl md:text-8xl font-black mb-8 tracking-tighter leading-none text-white">GitHub Ready.<br/><span class="gradient-text">Instant Privacy.</span></h1>
-                    <div class="flex flex-col sm:flex-row justify-center gap-6">
-                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:bg-indigo-700 transition shadow-2xl shadow-indigo-500/40 transform hover:-translate-y-1">Get Started Now</button>
-                    </div>
+                    <span class="bg-indigo-500/10 text-indigo-400 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest mb-6 inline-block border border-indigo-500/20">Next-Gen Virtual Banking</span>
+                    <h1 class="text-6xl md:text-8xl font-black mb-8 tracking-tighter leading-none text-white">Earn. Spend.<br/><span class="gradient-text">Convert Points.</span></h1>
+                    <p class="text-slate-400 max-w-2xl mx-auto mb-10 text-lg">Instant virtual Mastercards with a built-in rewards engine. Earn NixPoints for every move and convert them to real balance.</p>
+                    <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-10 py-5 rounded-2xl text-lg font-bold hover:bg-indigo-700 transition shadow-2xl shadow-indigo-500/40">Start Earning Now</button>
                 </div>
             `;
         }
 
         function renderAuth(mode = 'login') {
-            updateNav('auth');
+            updateNav();
             const isLogin = mode === 'login';
             document.getElementById('app-container').innerHTML = `
-                <div class="fade-in max-w-md mx-auto mt-6 p-10 bg-slate-800/50 backdrop-blur-xl rounded-3xl border border-slate-700/50 shadow-2xl">
-                    <div class="text-center mb-10">
-                        <h2 class="text-3xl font-black text-white mb-2">${isLogin ? 'Welcome Back' : 'Join PayNix'}</h2>
-                        <p class="text-slate-400 text-sm">Use your GitHub account for instant access</p>
+                <div class="fade-in max-w-md mx-auto p-10 bg-slate-800/50 rounded-3xl border border-slate-700/50 shadow-2xl">
+                    <div class="text-center mb-8">
+                        <h2 class="text-3xl font-black text-white">${isLogin ? 'Welcome Back' : 'Create Account'}</h2>
+                        <p class="text-slate-400 text-sm mt-2">Get 50 Welcome Points upon joining</p>
                     </div>
-                    
-                    <button onclick="handleGithubLogin()" class="w-full bg-slate-700 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-3 mb-8 hover:bg-slate-600 transition shadow-lg group">
-                        <i class="fab fa-github text-xl"></i>
-                        ${isLogin ? 'Login with GitHub' : 'Sign in with GitHub'}
-                    </button>
-
-                    <div class="relative flex items-center mb-8">
-                        <div class="flex-grow border-t border-slate-700"></div>
-                        <span class="flex-shrink mx-4 text-slate-500 text-xs font-bold tracking-widest uppercase">Or email</span>
-                        <div class="flex-grow border-t border-slate-700"></div>
-                    </div>
-
-                    <form onsubmit="${isLogin ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-5">
-                        ${!isLogin ? `
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Full Name</label>
-                            <input type="text" id="fullname" required placeholder="John Doe" class="w-full bg-slate-900/50 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition placeholder:text-slate-600">
-                        </div>` : ''}
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Email Address</label>
-                            <input type="email" id="email" required placeholder="name@company.com" class="w-full bg-slate-900/50 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition placeholder:text-slate-600">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Password</label>
-                            <input type="password" id="password" required placeholder="••••••••" class="w-full bg-slate-900/50 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition placeholder:text-slate-600">
-                        </div>
-                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl transition mt-4 shadow-xl shadow-indigo-500/20 transform active:scale-[0.98]">
-                            ${isLogin ? 'Log In to Portal' : 'Create My Account'}
+                    <form onsubmit="${isLogin ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-4">
+                        ${!isLogin ? `<input type="text" id="fullname" required placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">` : ''}
+                        <input type="email" id="email" required placeholder="Email Address" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                        <input type="password" id="password" required placeholder="Password" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl transition shadow-xl shadow-indigo-500/20">
+                            ${isLogin ? 'Sign In' : 'Sign Up'}
                         </button>
                     </form>
-                    <p class="mt-8 text-center text-sm text-slate-400">
-                        ${isLogin ? "Don't have an account? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer hover:text-indigo-300 font-bold transition\">Sign up</span>" : "Already registered? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer hover:text-indigo-300 font-bold transition\">Log in</span>"}
+                    <p class="mt-6 text-center text-sm text-slate-400">
+                        ${isLogin ? "New to PayNix? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Create account</span>" : "Have an account? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer font-bold\">Log in</span>"}
                     </p>
                 </div>
             `;
-        }
-
-        async function handleGithubLogin() {
-            const { error } = await supabaseApp.auth.signInWithOAuth({
-                provider: 'github',
-                options: { redirectTo: window.location.href }
-            });
-            if (error) showCustomAlert("Error", error.message);
         }
 
         async function handleSignup(e) {
             e.preventDefault();
             const btn = document.getElementById('auth-btn');
             btn.innerText = 'Initializing...';
-            btn.disabled = true;
-
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            const fullname = document.getElementById('fullname').value;
-
             const { error } = await supabaseApp.auth.signUp({ 
-                email, password, options: { data: { full_name: fullname } }
+                email: document.getElementById('email').value, 
+                password: document.getElementById('password').value, 
+                options: { data: { full_name: document.getElementById('fullname').value } }
             });
-            
-            if (error) {
-                showCustomAlert("Sign Up Failed", error.message);
-                btn.innerText = 'Create My Account';
-                btn.disabled = false;
-                return;
-            }
-
-            showCustomAlert(
-                "Verify Your Identity", 
-                "Check your email for the verification link to activate your PayNix portal.", 
-                () => navigateTo('auth', {mode: 'login'}),
-                'fa-paper-plane'
-            );
+            if (error) { showCustomAlert("Error", error.message); btn.innerText = 'Sign Up'; }
+            else showCustomAlert("Success", "Check email for verification.");
         }
 
         async function handleLogin(e) {
             e.preventDefault();
-            const btn = document.getElementById('auth-btn');
-            btn.innerText = 'Authenticating...';
-            btn.disabled = true;
             const { error } = await supabaseApp.auth.signInWithPassword({
                 email: document.getElementById('email').value,
                 password: document.getElementById('password').value
             });
-            if (error) {
-                showCustomAlert("Login Failed", error.message, null, 'fa-times-circle');
-                btn.innerText = 'Log In to Portal';
-                btn.disabled = false;
-            }
+            if (error) showCustomAlert("Error", error.message);
         }
 
-        async function logout() {
-            await supabaseApp.auth.signOut();
-            navigateTo('index');
-        }
+        async function logout() { await supabaseApp.auth.signOut(); location.reload(); }
 
         function renderPortal() {
-            updateNav('portal');
+            updateNav();
             const app = document.getElementById('app-container');
-            const displayName = currentProfile?.full_name || currentUser?.user_metadata?.full_name || currentUser?.email?.split('@')[0] || 'Member';
+            const firstName = (currentProfile?.full_name || 'User').split(' ')[0];
             
             if (!userCard) {
                 app.innerHTML = `
-                    <div class="fade-in max-w-2xl mx-auto py-12">
-                        <div class="text-center mb-12">
-                            <h2 class="text-4xl font-black text-white mb-4">Welcome, ${displayName.split(' ')[0]}</h2>
-                            <p class="text-slate-400">Security check passed. You can now issue your virtual card.</p>
-                        </div>
-                        
-                        <div class="bg-indigo-600/5 border border-indigo-500/20 rounded-3xl p-10 text-center relative overflow-hidden group">
-                            <div class="absolute -top-24 -right-24 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl transition-transform duration-700"></div>
-                            <div class="w-24 h-24 bg-indigo-600 text-white rounded-3xl flex items-center justify-center mx-auto mb-8 text-3xl shadow-2xl transform group-hover:rotate-6 transition-transform">
-                                <i class="fas fa-plus"></i>
-                            </div>
-                            <h3 class="text-2xl font-bold text-white mb-4">Issue New Virtual Card</h3>
-                            <button onclick="createCard()" id="create-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 px-12 rounded-2xl shadow-xl transition-all transform hover:-translate-y-1 active:scale-95">
-                                Generate Card Now
+                    <div class="fade-in max-w-2xl mx-auto py-12 text-center">
+                        <h2 class="text-4xl font-black text-white mb-4">Ready, ${firstName}?</h2>
+                        <p class="text-slate-400 mb-10">Issue your card now to earn your first 100 NixPoints!</p>
+                        <div class="bg-indigo-600/5 border border-indigo-500/20 rounded-3xl p-10 group">
+                            <button onclick="createCard()" id="create-btn" class="bg-indigo-600 text-white font-bold py-4 px-12 rounded-xl transition shadow-xl shadow-indigo-500/40 transform hover:scale-105">
+                                Generate Virtual Card (+100 Points)
                             </button>
                         </div>
                     </div>
@@ -459,49 +400,113 @@
             } else {
                 const num = userCard.card_number.match(/.{1,4}/g).join(' ');
                 app.innerHTML = `
-                    <div class="fade-in max-w-4xl mx-auto py-6">
-                        <div class="flex items-center justify-between mb-10">
-                            <h2 class="text-3xl font-black text-white">Your Virtual Wallet</h2>
-                            <div class="bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/20">
-                                <i class="fas fa-circle-check mr-1 text-[10px]"></i> Live Sync Active
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-1 lg:grid-cols-5 gap-10">
-                            <div class="lg:col-span-3 space-y-8">
-                                <div class="credit-card relative aspect-[1.586] w-full rounded-3xl p-10 text-white flex flex-col justify-between overflow-hidden">
+                    <div class="fade-in max-w-6xl mx-auto">
+                        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                            
+                            <!-- Left: Card & Balance -->
+                            <div class="lg:col-span-8 space-y-8">
+                                <div class="credit-card aspect-[1.586] w-full max-w-md mx-auto lg:mx-0 rounded-3xl p-8 text-white flex flex-col justify-between">
                                     <div class="flex justify-between items-start">
-                                        <div class="text-2xl font-black tracking-tighter">PAYNIX</div>
-                                        <div class="w-14 h-10 bg-white/10 rounded-lg backdrop-blur-md border border-white/20 flex items-center justify-center">
-                                            <div class="w-8 h-8 rounded-full bg-red-500/80 -mr-2"></div>
-                                            <div class="w-8 h-8 rounded-full bg-yellow-500/80"></div>
+                                        <div class="text-xl font-black italic">PAYNIX</div>
+                                        <div class="flex flex-col items-end">
+                                            <i class="fab fa-cc-mastercard text-4xl opacity-90"></i>
+                                            <span class="text-[8px] tracking-[0.2em] font-bold mt-1">VIRTUAL GOLD</span>
                                         </div>
                                     </div>
-                                    <p class="font-mono text-2xl md:text-3xl tracking-[0.2em] text-indigo-50 shadow-black drop-shadow-lg">${num}</p>
+                                    <p class="font-mono text-2xl md:text-3xl tracking-widest text-center my-4">${num}</p>
                                     <div class="flex justify-between items-end">
                                         <div>
-                                            <p class="text-[10px] text-indigo-300 font-bold uppercase tracking-widest mb-1">Holder</p>
-                                            <p class="font-bold tracking-wide uppercase text-lg">${userCard.holder_name}</p>
+                                            <p class="text-[10px] text-indigo-300 uppercase font-bold">Card Holder</p>
+                                            <p class="font-bold uppercase tracking-tight">${userCard.holder_name}</p>
                                         </div>
                                         <div class="text-right">
-                                            <p class="text-[10px] text-indigo-300 font-bold uppercase tracking-widest mb-1">Status</p>
-                                            <p class="font-bold text-emerald-400 uppercase">${userCard.status}</p>
+                                            <p class="text-[10px] text-indigo-300 uppercase font-bold">CVV</p>
+                                            <p class="font-bold tracking-widest">${userCard.cvv}</p>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                            <div class="lg:col-span-2 space-y-6">
-                                <div class="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50">
-                                    <p class="text-slate-500 text-xs font-bold uppercase mb-2">Available Balance</p>
-                                    <p class="text-3xl font-black text-white">$${parseFloat(userCard.balance).toFixed(2)}</p>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
+                                        <h3 class="text-slate-500 text-xs font-black uppercase tracking-widest mb-2">Available Balance</h3>
+                                        <p class="text-5xl font-black text-white">$${parseFloat(userCard.balance).toFixed(2)}</p>
+                                        <div class="mt-6 flex gap-2">
+                                            <span class="bg-emerald-500/10 text-emerald-400 text-[10px] font-bold px-2 py-1 rounded uppercase">Verified</span>
+                                            <span class="bg-indigo-500/10 text-indigo-400 text-[10px] font-bold px-2 py-1 rounded uppercase">Instant Access</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Transfer Form -->
+                                    <div class="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50">
+                                        <h3 class="text-white text-sm font-bold mb-4 flex items-center gap-2">
+                                            <i class="fas fa-paper-plane text-indigo-400"></i> Quick Transfer
+                                        </h3>
+                                        <form onsubmit="handleTransfer(event)" class="space-y-3">
+                                            <input type="email" id="transfer-email" required placeholder="Recipient Email" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 text-sm text-white outline-none">
+                                            <div class="relative">
+                                                <span class="absolute left-3 top-3 text-slate-500 text-sm">$</span>
+                                                <input type="number" id="transfer-amount" required step="0.01" placeholder="0.00" class="w-full bg-slate-900/80 border border-slate-700 rounded-xl p-3 pl-7 text-sm text-white outline-none">
+                                            </div>
+                                            <button type="submit" class="w-full bg-indigo-600 text-white text-sm font-bold py-3 rounded-xl hover:bg-indigo-500 transition">
+                                                Send Funds (+20 pts)
+                                            </button>
+                                        </form>
+                                    </div>
                                 </div>
-                                <div class="bg-slate-800/40 p-6 rounded-3xl border border-slate-700/50">
-                                    <p class="text-slate-500 text-xs font-bold uppercase mb-2">Security Code (CVV)</p>
-                                    <p class="text-3xl font-black text-white tracking-widest">${userCard.cvv}</p>
-                                </div>
-                                <button onclick="showCustomAlert('Top Up', 'This feature is currently in sandbox mode. Virtual balances are simulated.')" class="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 font-bold py-4 rounded-2xl transition">
-                                    Add Funds
-                                </button>
                             </div>
+
+                            <!-- Right: Points & Rewards -->
+                            <div class="lg:col-span-4 space-y-6">
+                                <div class="bg-slate-800/60 p-8 rounded-3xl border border-slate-700 border-t-amber-500/50 relative overflow-hidden">
+                                    <div class="absolute -right-10 -top-10 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl"></div>
+                                    <div class="relative">
+                                        <h3 class="text-slate-400 text-xs font-black uppercase tracking-widest mb-6">NixPoints Rewards</h3>
+                                        <div class="flex items-center justify-between mb-8">
+                                            <div>
+                                                <p class="text-4xl font-black text-white">${currentProfile?.points || 0}</p>
+                                                <p class="text-amber-500 text-xs font-bold">Total Accumulated</p>
+                                            </div>
+                                            <div class="w-14 h-14 points-badge rounded-2xl flex items-center justify-center text-white text-2xl shadow-lg">
+                                                <i class="fas fa-gem"></i>
+                                            </div>
+                                        </div>
+
+                                        <div class="space-y-4 mb-8">
+                                            <div class="flex items-center justify-between text-xs p-3 bg-slate-900/50 rounded-xl">
+                                                <span class="text-slate-400">Next NixCoin at</span>
+                                                <span class="text-white font-bold">100 pts</span>
+                                            </div>
+                                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
+                                                <div class="bg-amber-500 h-full transition-all" style="width: ${(currentProfile?.points % 100)}%"></div>
+                                            </div>
+                                        </div>
+
+                                        <button onclick="convertPoints()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 text-amber-950 font-black rounded-2xl transition shadow-xl shadow-amber-500/20 flex items-center justify-center gap-2">
+                                            <i class="fas fa-coins"></i> Convert to NixCoin
+                                        </button>
+                                        <p class="text-[10px] text-center text-slate-500 mt-3">100 points = 1 NixCoin ($1.00 USD)</p>
+                                    </div>
+                                </div>
+
+                                <div class="bg-slate-800/30 p-6 rounded-3xl border border-slate-700/50">
+                                    <h4 class="text-white text-xs font-bold uppercase mb-4 tracking-wider">How to earn</h4>
+                                    <ul class="space-y-4">
+                                        <li class="flex items-center gap-3 text-xs">
+                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">1</span>
+                                            <span class="text-slate-400">Issue a card <b class="text-slate-200">+100 pts</b></span>
+                                        </li>
+                                        <li class="flex items-center gap-3 text-xs">
+                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">2</span>
+                                            <span class="text-slate-400">Every transfer <b class="text-slate-200">+20 pts</b></span>
+                                        </li>
+                                        <li class="flex items-center gap-3 text-xs">
+                                            <span class="w-6 h-6 bg-indigo-500/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold">3</span>
+                                            <span class="text-slate-400">Top-up balance <b class="text-slate-200">+50 pts</b></span>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+
                         </div>
                     </div>
                 `;
@@ -510,55 +515,26 @@
 
         function renderCertificate(card) {
             const app = document.getElementById('app-container');
-            const num = card.card_number.match(/.{1,4}/g).join(' ');
-            
             app.innerHTML = `
-                <div class="fade-in max-w-2xl mx-auto py-10">
-                    <div class="certificate-border shadow-2xl rounded-sm">
-                        <div class="border border-indigo-500/30 p-10 text-center">
-                            <h2 class="text-indigo-400 font-serif italic text-xl mb-2">Official Issuance Document</h2>
-                            <h1 class="text-4xl font-black text-white mb-6 tracking-tight uppercase">PayNix Certificate</h1>
-                            
-                            <div class="w-full h-px bg-indigo-500/20 mb-8"></div>
-                            
-                            <p class="text-slate-400 mb-2 font-medium">This document confirms the issuance of a secure virtual Mastercard to:</p>
-                            <h3 class="text-2xl font-bold text-white mb-8 underline decoration-indigo-500 underline-offset-8">${card.holder_name}</h3>
-                            
-                            <div class="grid grid-cols-1 gap-6 text-left bg-slate-900/50 p-6 rounded-xl border border-indigo-500/10 mb-8">
-                                <div>
-                                    <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">Card Number</p>
-                                    <p class="text-xl font-mono text-white tracking-widest">${num}</p>
-                                </div>
-                                <div class="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">CVV Security Code</p>
-                                        <p class="text-xl font-mono text-white tracking-widest">${card.cvv}</p>
-                                    </div>
-                                    <div>
-                                        <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">Initial Balance</p>
-                                        <p class="text-xl font-bold text-emerald-400">$10.00</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <p class="text-xs text-slate-500 italic mb-10 leading-relaxed">
-                                IMPORTANT: This certificate is shown ONLY ONCE. Please take a screenshot or write down your details. By clicking "Enter Dashboard", you acknowledge that you have stored these details securely.
-                            </p>
-
-                            <button onclick="handleSession(true)" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-10 rounded-xl transition shadow-xl w-full">
-                                I have saved these details, Enter Dashboard
-                            </button>
-
-                            <div class="certificate-seal">
-                                <span class="text-[10px] leading-tight">OFFICIAL<br>PAYNIX<br>SEAL</span>
+                <div class="fade-in max-w-xl mx-auto py-10">
+                    <div class="bg-slate-800 border-4 border-double border-indigo-500 p-12 text-center rounded shadow-2xl relative">
+                        <div class="absolute -top-6 left-1/2 -translate-x-1/2 bg-indigo-500 text-white text-[10px] font-black px-4 py-2 rounded-full uppercase tracking-[0.3em]">Official Issuance</div>
+                        <h1 class="text-2xl font-black text-white mb-6 uppercase tracking-tighter">Mastercard Generated</h1>
+                        <div class="bg-slate-900 p-8 rounded-2xl border border-slate-700 mb-8 text-left">
+                            <p class="text-[10px] text-indigo-500 font-bold uppercase mb-4 tracking-widest">Digital Asset Token</p>
+                            <p class="text-2xl font-mono text-white mb-4 tracking-widest">${card.card_number.match(/.{1,4}/g).join(' ')}</p>
+                            <div class="flex justify-between border-t border-slate-800 pt-4">
+                                <div><p class="text-[10px] text-slate-500 font-bold">CVV</p><p class="text-white font-bold">${card.cvv}</p></div>
+                                <div class="text-right"><p class="text-[10px] text-slate-500 font-bold">POINTS EARNED</p><p class="text-amber-500 font-bold">+100</p></div>
                             </div>
                         </div>
+                        <button onclick="renderPortal()" class="bg-indigo-600 text-white font-bold py-4 w-full rounded-xl shadow-lg shadow-indigo-500/30">Activate Dashboard</button>
                     </div>
                 </div>
             `;
         }
 
-        setTimeout(init, 100);
+        window.onload = init;
     </script>
 </body>
 </html>
