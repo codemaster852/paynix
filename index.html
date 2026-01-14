@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PayNix | Virtual Cards by CodeNix</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .credit-card {
+            background: linear-gradient(135deg, #1e1e2f 0%, #111119 100%);
+            transition: transform 0.3s;
+        }
+        .credit-card:hover { transform: scale(1.02); }
+        .gradient-text {
+            background: linear-gradient(to right, #6366f1, #a855f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        /* Page Transitions */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        
+        /* Custom Alert Modal */
+        #custom-alert {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col">
+
+    <!-- Custom Alert Modal -->
+    <div id="custom-alert">
+        <div class="bg-slate-800 border border-slate-700 p-8 rounded-2xl max-w-sm w-full mx-4 text-center shadow-2xl">
+            <div class="w-16 h-16 bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                <i class="fas fa-envelope-open-text"></i>
+            </div>
+            <h3 class="text-xl font-bold mb-2">Check Your Email</h3>
+            <p id="alert-msg" class="text-slate-400 mb-6">A verification link has been sent to your email address. Please verify to continue.</p>
+            <button id="alert-ok" class="w-full bg-indigo-600 hover:bg-indigo-700 py-3 rounded-xl font-bold transition">OK</button>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="border-b border-slate-800 bg-slate-900/90 backdrop-blur fixed w-full z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center cursor-pointer" onclick="navigateTo('index')">
+                    <span class="text-2xl font-bold tracking-tight"><span class="text-indigo-500">Pay</span>Nix</span>
+                </div>
+                <!-- Dynamic Nav Items -->
+                <div id="nav-container"></div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow pt-24 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full" id="app-container">
+        <!-- Loading Spinner -->
+        <div class="flex justify-center items-center h-64">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-800 py-8 text-center text-slate-500 text-sm mt-auto">
+        <p>&copy; 2024 CodeNix Services. All rights reserved.</p>
+        <p class="mt-2 cursor-pointer hover:text-indigo-400" onclick="renderPolicy()">View Cheating Policy</p>
+    </footer>
+
+    <!-- Logic -->
+    <script>
+        var SUPABASE_URL = 'https://vnyltfnyuzlfdzjpkzbu.supabase.co';
+        var SUPABASE_KEY = 'sb_publishable_fo3B8xkI1AG-u2nJaGK2YQ_LbE5khrC'; 
+        
+        var supabaseApp;
+        if (window.supabaseApp) {
+            supabaseApp = window.supabaseApp;
+        } else {
+            const createClient = window.supabase ? window.supabase.createClient : null;
+            if (createClient) {
+                supabaseApp = createClient(SUPABASE_URL, SUPABASE_KEY);
+                window.supabaseApp = supabaseApp;
+            }
+        }
+
+        var currentUser = null;
+        var currentProfile = null;
+        var userCard = null;
+
+        async function init() {
+            if (!supabaseApp) return;
+            const { data: { session } } = await supabaseApp.auth.getSession();
+            handleSession(session);
+            supabaseApp.auth.onAuthStateChange(async (_event, session) => {
+                handleSession(session);
+            });
+        }
+
+        async function handleSession(session) {
+            if (session) {
+                currentUser = session.user;
+                updateNav('portal');
+                renderLoading();
+                await fetchProfile();
+            } else {
+                currentUser = null;
+                currentProfile = null;
+                userCard = null;
+                updateNav('index');
+                renderIndex();
+            }
+        }
+
+        async function fetchProfile() {
+            if (!currentUser) return;
+            let { data: profile } = await supabaseApp.from('profiles').select('*').eq('id', currentUser.id).single();
+            currentProfile = profile;
+            let { data: card } = await supabaseApp.from('cards').select('*').eq('user_id', currentUser.id).maybeSingle(); 
+            userCard = card;
+            renderPortal();
+        }
+
+        function showCustomAlert(msg, onOk) {
+            const modal = document.getElementById('custom-alert');
+            const btn = document.getElementById('alert-ok');
+            document.getElementById('alert-msg').innerText = msg;
+            modal.style.display = 'flex';
+            btn.onclick = () => {
+                modal.style.display = 'none';
+                if (onOk) onOk();
+            };
+        }
+
+        function navigateTo(page, params = {}) {
+            if (page === 'index') {
+                currentUser ? renderPortal() : renderIndex();
+            } else if (page === 'auth') {
+                currentUser ? renderPortal() : renderAuth(params.mode || 'login');
+            } else if (page === 'portal') {
+                currentUser ? renderPortal() : renderAuth('login');
+            }
+        }
+
+        function updateNav(page) {
+            const nav = document.getElementById('nav-container');
+            if (page === 'portal' && currentUser) {
+                nav.innerHTML = `
+                    <div class="flex items-center gap-4 fade-in">
+                        <span class="text-sm text-slate-300 hidden sm:block">${currentUser.email}</span>
+                        <button onclick="logout()" class="text-slate-400 hover:text-white transition"><i class="fas fa-sign-out-alt"></i></button>
+                    </div>
+                `;
+            } else {
+                nav.innerHTML = `
+                    <div class="flex items-center gap-2 fade-in">
+                        <button onclick="navigateTo('auth', {mode: 'login'})" class="text-slate-300 hover:text-white font-medium px-3 py-2 text-sm">Log In</button>
+                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm transition font-medium">Sign Up</button>
+                    </div>
+                `;
+            }
+        }
+
+        function renderLoading() {
+            document.getElementById('app-container').innerHTML = `<div class="flex justify-center items-center h-64"><div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div></div>`;
+        }
+
+        function renderIndex() {
+            updateNav('index');
+            document.getElementById('app-container').innerHTML = `
+                <div class="fade-in text-center py-16 lg:py-24">
+                    <h1 class="text-5xl md:text-7xl font-bold mb-6 tracking-tight leading-tight">Virtual Cards for <br/><span class="gradient-text">CodeNix Services</span></h1>
+                    <div class="flex flex-col sm:flex-row justify-center gap-4 mt-10">
+                        <button onclick="navigateTo('auth', {mode: 'signup'})" class="bg-indigo-600 text-white px-8 py-4 rounded-xl text-lg font-semibold hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/20">Create Your Card</button>
+                        <button onclick="navigateTo('auth', {mode: 'login'})" class="bg-slate-800 text-white px-8 py-4 rounded-xl text-lg font-semibold hover:bg-slate-700 transition border border-slate-700">Log In to Portal</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAuth(mode = 'login') {
+            updateNav('index');
+            const title = mode === 'login' ? 'Welcome Back' : 'Create Account';
+            const buttonText = mode === 'login' ? 'Log In' : 'Sign Up';
+            const googleText = mode === 'login' ? 'Sign in with Google' : 'Sign up with Google';
+            const toggleText = mode === 'login' 
+                ? "Don't have an account? <span onclick=\"navigateTo('auth', {mode: 'signup'})\" class=\"text-indigo-400 cursor-pointer hover:underline font-bold\">Sign up</span>"
+                : "Already have an account? <span onclick=\"navigateTo('auth', {mode: 'login'})\" class=\"text-indigo-400 cursor-pointer hover:underline font-bold\">Log in</span>";
+
+            document.getElementById('app-container').innerHTML = `
+                <div class="fade-in max-w-md mx-auto mt-10 p-8 bg-slate-800 rounded-2xl border border-slate-700 shadow-2xl">
+                    <h2 class="text-2xl font-bold mb-6 text-center text-white">${title}</h2>
+                    
+                    <!-- Google Auth Button -->
+                    <button onclick="handleGoogleLogin()" class="w-full bg-white text-slate-900 font-bold py-3 rounded-lg flex items-center justify-center gap-3 mb-6 hover:bg-slate-100 transition shadow-lg">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/smartlock/google.svg" class="w-5 h-5" alt="Google">
+                        ${googleText}
+                    </button>
+
+                    <div class="relative flex items-center mb-6">
+                        <div class="flex-grow border-t border-slate-700"></div>
+                        <span class="flex-shrink mx-4 text-slate-500 text-sm">OR EMAIL</span>
+                        <div class="flex-grow border-t border-slate-700"></div>
+                    </div>
+
+                    <form onsubmit="${mode === 'login' ? 'handleLogin(event)' : 'handleSignup(event)'}" class="space-y-4">
+                        ${mode === 'signup' ? `
+                        <div>
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Full Name</label>
+                            <input type="text" id="fullname" required class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                        </div>` : ''}
+                        <div>
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Email Address</label>
+                            <input type="email" id="email" required class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Password</label>
+                            <input type="password" id="password" required class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                        </div>
+                        <button type="submit" id="auth-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition mt-2 shadow-lg shadow-indigo-500/20">
+                            ${buttonText}
+                        </button>
+                    </form>
+                    <p class="mt-6 text-center text-sm text-slate-400">${toggleText}</p>
+                </div>
+            `;
+        }
+
+        async function handleGoogleLogin() {
+            const { error } = await supabaseApp.auth.signInWithOAuth({
+                provider: 'google',
+                options: { redirectTo: window.location.href }
+            });
+            if (error) alert(error.message);
+        }
+
+        async function handleSignup(e) {
+            e.preventDefault();
+            const btn = document.getElementById('auth-btn');
+            btn.innerText = 'Processing...';
+            btn.disabled = true;
+
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const fullname = document.getElementById('fullname').value;
+
+            const { data, error } = await supabaseApp.auth.signUp({ 
+                email, 
+                password,
+                options: { data: { full_name: fullname } }
+            });
+            
+            if (error) {
+                alert(error.message);
+                btn.innerText = 'Sign Up';
+                btn.disabled = false;
+                return;
+            }
+
+            // Create Profile entry manually
+            if (data.user) {
+                await supabaseApp.from('profiles').insert([{
+                    id: data.user.id,
+                    email: email,
+                    full_name: fullname,
+                    points: 0
+                }]);
+            }
+
+            showCustomAlert("We've sent a verification link to your email. Please verify your account to log in.", () => {
+                navigateTo('auth', {mode: 'login'});
+            });
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const btn = document.getElementById('auth-btn');
+            btn.innerText = 'Verifying...';
+            btn.disabled = true;
+            const { error } = await supabaseApp.auth.signInWithPassword({
+                email: document.getElementById('email').value,
+                password: document.getElementById('password').value
+            });
+            if (error) {
+                alert(error.message);
+                btn.innerText = 'Log In';
+                btn.disabled = false;
+            }
+        }
+
+        async function logout() {
+            await supabaseApp.auth.signOut();
+            navigateTo('index');
+        }
+
+        function renderPortal() {
+            updateNav('portal');
+            const app = document.getElementById('app-container');
+            if (!userCard) {
+                app.innerHTML = `
+                    <div class="fade-in text-center py-20 bg-slate-800/30 rounded-3xl border border-slate-700 mt-8">
+                        <h2 class="text-3xl font-bold mb-4 text-white">Welcome, ${currentProfile?.full_name || 'User'}</h2>
+                        <button onclick="createCard()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-xl shadow-lg transition mx-auto">Create Virtual Card</button>
+                    </div>
+                `;
+                return;
+            }
+            app.innerHTML = `<div class="fade-in p-8 bg-slate-800 rounded-2xl border border-slate-700 max-w-lg mx-auto mt-10">
+                <h3 class="text-xl font-bold mb-4">Your Portal</h3>
+                <p class="text-slate-400">Card ending in ...${userCard.card_number.slice(-4)}</p>
+                <div class="mt-6 p-4 bg-slate-900 rounded-lg">
+                    <p class="text-xs text-slate-500 uppercase">Balance</p>
+                    <p class="text-2xl font-bold">$${parseFloat(userCard.balance).toFixed(2)}</p>
+                </div>
+            </div>`;
+        }
+
+        async function createCard() {
+            const { error } = await supabaseApp.from('cards').insert([{
+                user_id: currentUser.id,
+                card_number: '4' + Math.random().toString().slice(2, 17),
+                cvv: '123',
+                holder_name: currentProfile.full_name,
+                status: 'active'
+            }]);
+            if (error) alert(error.message);
+            else await fetchProfile();
+        }
+
+        setTimeout(init, 100);
+    </script>
+</body>
+</html>
