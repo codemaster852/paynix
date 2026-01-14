@@ -1,468 +1,297 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  User, 
-  Layout, 
-  CreditCard, 
-  Settings, 
-  LogOut, 
-  Globe, 
-  ShieldCheck, 
-  Cpu, 
-  Edit3, 
-  Save, 
-  PlusCircle,
-  Smartphone,
-  CheckCircle2,
-  ExternalLink
-} from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IdNix | Unified Identity by CodeNix</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(12px); }
+        .nix-card { background: linear-gradient(135deg, #4f46e5 0%, #312e81 100%); }
+        .hidden-view { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
 
-// --- CONFIGURATION ---
-const SUPABASE_URL = "https://vnyltfnyuzlfdzjpkzbu.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_fo3B8xkI1AG-u2nJaGK2YQ_LbE5khrC";
-
-// Helper to get supabase client from window (loaded via CDN)
-const getSupabase = () => {
-  if (typeof window !== 'undefined' && window.supabase) {
-    return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  }
-  return null;
-};
-
-const App = () => {
-  const [supabase, setSupabase] = useState(null);
-  const [session, setSession] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState(null);
-  const [view, setView] = useState('dashboard'); // dashboard | profile | auth
-  const [authMode, setAuthMode] = useState('signin'); // signin | signup
-  
-  // Form States
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [username, setUsername] = useState('');
-  const [error, setError] = useState(null);
-
-  // Initialize Supabase from CDN
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-    script.async = true;
-    script.onload = () => {
-      const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      setSupabase(client);
-    };
-    document.body.appendChild(script);
-  }, []);
-
-  useEffect(() => {
-    if (!supabase) return;
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) fetchProfile(session.user.id);
-      setLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) fetchProfile(session.user.id);
-      else setProfile(null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, [supabase]);
-
-  const fetchProfile = async (userId) => {
-    if (!supabase) return;
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-
-    if (data) setProfile(data);
-    else if (error) console.error("Profile fetch error:", error);
-  };
-
-  const handleAuth = async (e) => {
-    e.preventDefault();
-    if (!supabase) return;
-    setError(null);
-    setLoading(true);
-
-    try {
-      if (authMode === 'signup') {
-        const nixId = `${username}@nix`;
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { username, nix_id: nixId }
-          }
-        });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateProfile = async (updates) => {
-    if (!supabase || !session) return;
-    setLoading(true);
-    const { error } = await supabase
-      .from('profiles')
-      .update(updates)
-      .eq('id', session.user.id);
-    
-    if (error) setError(error.message);
-    else fetchProfile(session.user.id);
-    setLoading(false);
-  };
-
-  if (loading && !session) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
-      </div>
-    );
-  }
-
-  // --- COMPONENTS ---
-
-  const SidebarItem = ({ icon: Icon, label, active, onClick }) => (
-    <button
-      onClick={onClick}
-      className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all ${
-        active 
-        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' 
-        : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-      }`}
-    >
-      <Icon size={20} />
-      <span className="font-medium">{label}</span>
-    </button>
-  );
-
-  const StatCard = ({ label, value, icon: Icon, color }) => (
-    <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-sm">
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-slate-400 text-sm font-medium uppercase tracking-wider">{label}</span>
-        <div className={`p-2 rounded-lg ${color}`}>
-          <Icon size={20} className="text-white" />
-        </div>
-      </div>
-      <div className="text-2xl font-bold text-white">{value}</div>
-    </div>
-  );
-
-  // --- VIEWS ---
-
-  if (!session) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex flex-col md:flex-row font-sans">
-        {/* Left Side: Branding */}
-        <div className="w-full md:w-1/2 p-12 flex flex-col justify-between bg-gradient-to-br from-indigo-900 via-slate-950 to-black">
-          <div>
-            <div className="flex items-center space-x-2 mb-8">
-              <Cpu className="text-indigo-500" size={32} />
-              <span className="text-2xl font-bold text-white tracking-tighter">IdNix</span>
+    <!-- Auth View -->
+    <div id="auth-view" class="min-h-screen flex flex-col md:flex-row">
+        <div class="w-full md:w-1/2 p-12 flex flex-col justify-between bg-gradient-to-br from-indigo-900 via-slate-950 to-black">
+            <div>
+                <div class="flex items-center space-x-2 mb-8 text-white">
+                    <i class="fas fa-microchip text-indigo-500 text-3xl"></i>
+                    <span class="text-2xl font-bold tracking-tighter">IdNix</span>
+                </div>
+                <h1 class="text-5xl md:text-7xl font-extrabold text-white mb-6 leading-tight">
+                    One Identity. <br>
+                    <span class="text-indigo-500 opacity-80">Infinite</span> Access.
+                </h1>
+                <p class="text-slate-400 text-xl max-w-md leading-relaxed">
+                    Link all your services and information through your unique nixID identifier.
+                </p>
             </div>
-            <h1 className="text-5xl md:text-7xl font-extrabold text-white mb-6 leading-tight">
-              One Identity. <br />
-              <span className="text-indigo-500 underline decoration-indigo-500/30">Infinite</span> Access.
-            </h1>
-            <p className="text-slate-400 text-xl max-w-md leading-relaxed">
-              Unlock the CodeNix ecosystem with a single NixID. Manage credits, apps, and preferences in one unified portal.
-            </p>
-          </div>
-          <div className="hidden md:block text-slate-500 text-sm">
-            © 2024 CodeNix Systems. All rights reserved.
-          </div>
+            <div class="hidden md:block text-slate-500 text-sm">© 2024 CodeNix Platform</div>
         </div>
 
-        {/* Right Side: Auth Form */}
-        <div className="w-full md:w-1/2 p-6 md:p-24 flex items-center justify-center bg-slate-950">
-          <div className="w-full max-w-md">
-            <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-3xl backdrop-blur-xl">
-              <h2 className="text-3xl font-bold text-white mb-2">
-                {authMode === 'signin' ? 'Welcome Back' : 'Join IdNix'}
-              </h2>
-              <p className="text-slate-400 mb-8">
-                {authMode === 'signin' 
-                  ? 'Sign in to access your services.' 
-                  : 'Create your unique nixID and start exploring.'}
-              </p>
+        <div class="w-full md:w-1/2 p-6 md:p-24 flex items-center justify-center bg-slate-950">
+            <div class="w-full max-w-md glass border border-slate-800 p-8 rounded-3xl shadow-2xl">
+                <div id="auth-form-container">
+                    <h2 id="auth-title" class="text-3xl font-bold text-white mb-2">Welcome Back</h2>
+                    <p id="auth-subtitle" class="text-slate-400 mb-8">Sign in to access your Nix identity.</p>
 
-              <form onSubmit={handleAuth} className="space-y-4">
-                {authMode === 'signup' && (
-                  <div>
-                    <label className="block text-sm font-medium text-slate-400 mb-1">Username</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        required
-                        placeholder="john_doe"
-                        className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/\s/g, ''))}
-                      />
-                      <span className="absolute right-4 top-3 text-slate-500">@nix</span>
+                    <form id="auth-form" class="space-y-4">
+                        <div id="username-field" class="hidden">
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Username</label>
+                            <div class="relative">
+                                <input type="text" id="username" placeholder="john_doe" class="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500">
+                                <span class="absolute right-4 top-3 text-slate-500">@nix</span>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Email</label>
+                            <input type="email" id="email" required class="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-400 mb-1">Password</label>
+                            <input type="password" id="password" required class="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div id="auth-error" class="text-red-400 text-sm bg-red-400/10 p-3 rounded-lg border border-red-400/20 hidden"></div>
+                        <button type="submit" id="auth-submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-600/20">
+                            Sign In
+                        </button>
+                    </form>
+                    <div class="mt-8 text-center">
+                        <button id="toggle-auth" class="text-indigo-400 text-sm font-medium hover:underline">Don't have an ID? Create one</button>
                     </div>
-                  </div>
-                )}
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-1">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-400 mb-1">Password</label>
-                  <input
-                    type="password"
-                    required
-                    className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                </div>
-                
-                {error && <div className="text-red-400 text-sm bg-red-400/10 p-3 rounded-lg border border-red-400/20">{error}</div>}
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl transition-all transform active:scale-[0.98] disabled:opacity-50 shadow-lg shadow-indigo-600/20"
-                >
-                  {loading ? 'Processing...' : (authMode === 'signin' ? 'Sign In' : 'Create Identity')}
-                </button>
-              </form>
-
-              <div className="mt-8 text-center">
-                <button 
-                  onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}
-                  className="text-indigo-400 hover:text-indigo-300 font-medium text-sm transition-colors"
-                >
-                  {authMode === 'signin' 
-                    ? "Don't have an ID? Create one now" 
-                    : "Already have an ID? Sign in"}
-                </button>
-              </div>
             </div>
-          </div>
         </div>
-      </div>
-    );
-  }
+    </div>
 
-  return (
-    <div className="min-h-screen bg-slate-950 flex text-slate-200 font-sans">
-      {/* Sidebar */}
-      <aside className="w-64 border-r border-slate-800 flex-col hidden lg:flex">
-        <div className="p-8">
-          <div className="flex items-center space-x-2">
-            <Cpu className="text-indigo-500" size={24} />
-            <span className="text-xl font-bold text-white tracking-tighter uppercase">IdNix</span>
-          </div>
-        </div>
+    <!-- App View -->
+    <div id="app-view" class="hidden-view min-h-screen flex">
+        <!-- Sidebar -->
+        <aside class="w-64 border-r border-slate-800 flex-col hidden lg:flex bg-slate-950">
+            <div class="p-8 flex items-center space-x-2 text-white">
+                <i class="fas fa-microchip text-indigo-500"></i>
+                <span class="text-xl font-bold tracking-tighter uppercase">IdNix</span>
+            </div>
+            <nav class="flex-1 px-4 space-y-2">
+                <button onclick="showSection('dashboard')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-lg bg-indigo-600 text-white" id="nav-dashboard">
+                    <i class="fas fa-th-large"></i><span>Dashboard</span>
+                </button>
+                <button onclick="showSection('profile')" class="nav-btn w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800" id="nav-profile">
+                    <i class="fas fa-user"></i><span>My Profile</span>
+                </button>
+            </nav>
+            <div class="p-4 border-t border-slate-800">
+                <button id="signout-btn" class="w-full flex items-center space-x-3 px-4 py-3 text-slate-500 hover:text-red-400">
+                    <i class="fas fa-sign-out-alt"></i><span>Sign Out</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 overflow-y-auto">
+            <header class="h-20 border-b border-slate-800 flex items-center justify-between px-8 sticky top-0 bg-slate-950/80 backdrop-blur-md z-20">
+                <h2 id="view-title" class="text-xl font-semibold text-white">Overview</h2>
+                <div class="flex items-center space-x-4">
+                    <div class="text-right hidden sm:block">
+                        <p id="header-username" class="text-sm font-bold text-white leading-none">User</p>
+                        <p id="header-nixid" class="text-xs text-indigo-400">id@nix</p>
+                    </div>
+                    <div id="user-avatar" class="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold border border-indigo-500/50">U</div>
+                </div>
+            </header>
+
+            <div class="p-8 max-w-6xl mx-auto">
+                <!-- Dashboard Section -->
+                <div id="dashboard-section" class="space-y-8">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+                            <div class="flex justify-between mb-4"><span class="text-slate-400 text-xs font-bold uppercase">Daily Credits</span><i class="fas fa-coins text-emerald-500"></i></div>
+                            <div id="stat-credits" class="text-2xl font-bold">100.00 NX</div>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+                            <div class="flex justify-between mb-4"><span class="text-slate-400 text-xs font-bold uppercase">Membership</span><i class="fas fa-crown text-amber-500"></i></div>
+                            <div id="stat-tier" class="text-2xl font-bold">Pioneer</div>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+                            <div class="flex justify-between mb-4"><span class="text-slate-400 text-xs font-bold uppercase">Linked Apps</span><i class="fas fa-mobile-alt text-indigo-500"></i></div>
+                            <div id="stat-apps" class="text-2xl font-bold">1</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                        <div class="nix-card p-8 rounded-3xl text-white relative overflow-hidden shadow-2xl">
+                            <div class="relative z-10">
+                                <div class="flex justify-between items-start mb-12">
+                                    <i class="fas fa-microchip text-3xl"></i>
+                                    <span class="px-3 py-1 bg-white/20 rounded-full text-[10px] font-bold uppercase">Nix Digital ID</span>
+                                </div>
+                                <p class="text-indigo-200 text-[10px] uppercase font-bold mb-1">Universal Identifier</p>
+                                <h3 id="card-nixid" class="text-3xl font-mono font-bold mb-6 tracking-tight">loading@nix</h3>
+                                <div class="flex space-x-12">
+                                    <div><p class="text-indigo-200 text-[10px] uppercase font-bold">Status</p><p class="text-sm font-bold"><i class="fas fa-check-circle text-emerald-400 mr-1"></i>Verified</p></div>
+                                    <div><p class="text-indigo-200 text-[10px] uppercase font-bold">Issued</p><p class="text-sm font-bold">2024</p></div>
+                                </div>
+                            </div>
+                            <div class="absolute -right-8 -bottom-8 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 p-8 rounded-3xl">
+                            <h3 class="text-lg font-bold mb-6"><i class="fas fa-bolt text-indigo-500 mr-2"></i>Quick Actions</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <button class="bg-slate-800 p-4 rounded-xl text-left hover:bg-slate-750 border border-slate-700/50"><i class="fas fa-plus-circle text-indigo-400 mb-2 block"></i><span class="text-sm font-bold">Top Up</span></button>
+                                <button onclick="showSection('profile')" class="bg-slate-800 p-4 rounded-xl text-left hover:bg-slate-750 border border-slate-700/50"><i class="fas fa-user-edit text-indigo-400 mb-2 block"></i><span class="text-sm font-bold">Edit ID</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Profile Section -->
+                <div id="profile-section" class="hidden-view space-y-8">
+                    <div class="max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
+                        <div class="p-8 border-b border-slate-800">
+                            <h3 class="text-xl font-bold">Identity Settings</h3>
+                            <p class="text-slate-400 text-sm">Customize your presence across the CodeNix ecosystem.</p>
+                        </div>
+                        <form id="profile-form" class="p-8 space-y-6">
+                            <div class="grid grid-cols-2 gap-6">
+                                <div><label class="block text-sm font-medium text-slate-400 mb-2">Full Name</label><input type="text" id="p-fullname" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none"></div>
+                                <div><label class="block text-sm font-medium text-slate-400 mb-2">Location</label><input type="text" id="p-location" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none"></div>
+                            </div>
+                            <div><label class="block text-sm font-medium text-slate-400 mb-2">Bio</label><textarea id="p-bio" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none h-24"></textarea></div>
+                            <button type="submit" class="bg-indigo-600 px-6 py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all"><i class="fas fa-save mr-2"></i>Save Changes</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Configuration
+        const SUPABASE_URL = "https://vnyltfnyuzlfdzjpkzbu.supabase.co";
+        const SUPABASE_ANON_KEY = "sb_publishable_fo3B8xkI1AG-u2nJaGK2YQ_LbE5khrC";
         
-        <nav className="flex-1 px-4 space-y-2">
-          <SidebarItem icon={Layout} label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
-          <SidebarItem icon={User} label="My Profile" active={view === 'profile'} onClick={() => setView('profile')} />
-          <SidebarItem icon={Globe} label="Connected Apps" active={false} onClick={() => {}} />
-          <SidebarItem icon={ShieldCheck} label="Security" active={false} onClick={() => {}} />
-        </nav>
+        // Use a uniquely named global or attachment to window to avoid redeclaration errors
+        window.nixSupabase = null;
+        let authMode = 'signin';
 
-        <div className="p-4 border-t border-slate-800">
-          <button 
-            onClick={() => supabase.auth.signOut()}
-            className="w-full flex items-center space-x-3 px-4 py-3 text-slate-500 hover:text-red-400 transition-colors"
-          >
-            <LogOut size={20} />
-            <span className="font-medium">Sign Out</span>
-          </button>
-        </div>
-      </aside>
+        // Initialize App
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize the client onto the window object to ensure it persists and avoid 'let' redeclaration issues
+            window.nixSupabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            checkSession();
+        });
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
-        {/* Top Header */}
-        <header className="h-20 border-b border-slate-800 flex items-center justify-between px-8 sticky top-0 bg-slate-950/80 backdrop-blur-md z-10">
-          <h2 className="text-xl font-semibold text-white">
-            {view === 'dashboard' ? 'Overview' : 'Profile Settings'}
-          </h2>
-          <div className="flex items-center space-x-4">
-            <div className="text-right hidden sm:block">
-              <p className="text-sm font-bold text-white leading-none">{profile?.username}</p>
-              <p className="text-xs text-indigo-400">{profile?.nix_id}</p>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold ring-2 ring-indigo-500/20 shadow-lg">
-              {profile?.username?.[0]?.toUpperCase()}
-            </div>
-          </div>
-        </header>
+        // Auth Toggle Logic
+        document.getElementById('toggle-auth').addEventListener('click', () => {
+            authMode = authMode === 'signin' ? 'signup' : 'signin';
+            document.getElementById('auth-title').innerText = authMode === 'signin' ? 'Welcome Back' : 'Join IdNix';
+            document.getElementById('auth-subtitle').innerText = authMode === 'signin' ? 'Sign in to access your Nix identity.' : 'Create your unique nixID to start exploring.';
+            document.getElementById('auth-submit').innerText = authMode === 'signin' ? 'Sign In' : 'Create Identity';
+            document.getElementById('toggle-auth').innerText = authMode === 'signin' ? "Don't have an ID? Create one" : "Already have an ID? Sign in";
+            document.getElementById('username-field').classList.toggle('hidden', authMode === 'signin');
+        });
 
-        <div className="p-8 max-w-6xl mx-auto">
-          {view === 'dashboard' && (
-            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              {/* Stats Section */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <StatCard 
-                  label="Daily Nix Credits" 
-                  value={`${profile?.credit_balance || 0} NX`} 
-                  icon={CreditCard} 
-                  color="bg-emerald-600" 
-                />
-                <StatCard 
-                  label="Tier Level" 
-                  value={profile?.tier || 'Member'} 
-                  icon={ShieldCheck} 
-                  color="bg-indigo-600" 
-                />
-                <StatCard 
-                  label="Active Apps" 
-                  value={profile?.apps_used || 0} 
-                  icon={Smartphone} 
-                  color="bg-amber-600" 
-                />
-              </div>
+        // Handle Login/Signup
+        document.getElementById('auth-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const username = document.getElementById('username').value;
+            const errorEl = document.getElementById('auth-error');
+            
+            errorEl.classList.add('hidden');
+            
+            try {
+                if (authMode === 'signup') {
+                    const { error } = await window.nixSupabase.auth.signUp({
+                        email, password,
+                        options: { data: { username, nix_id: `${username}@nix` } }
+                    });
+                    if (error) throw error;
+                    alert('Signup successful! Please check your email or sign in.');
+                } else {
+                    const { error } = await window.nixSupabase.auth.signInWithPassword({ email, password });
+                    if (error) throw error;
+                }
+            } catch (err) {
+                errorEl.innerText = err.message;
+                errorEl.classList.remove('hidden');
+            }
+        });
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* ID Card Display */}
-                <div className="bg-gradient-to-br from-indigo-600 to-indigo-900 p-8 rounded-3xl text-white relative overflow-hidden shadow-2xl shadow-indigo-600/20 group">
-                  <div className="relative z-10">
-                    <div className="flex justify-between items-start mb-12">
-                      <Cpu size={32} />
-                      <span className="px-3 py-1 bg-white/20 rounded-full text-xs font-bold uppercase tracking-widest">Digital Passport</span>
-                    </div>
-                    <div>
-                      <p className="text-indigo-200 text-xs font-medium uppercase tracking-widest mb-1">Universal Identity</p>
-                      <h3 className="text-3xl font-mono font-bold mb-6 tracking-tight">{profile?.nix_id}</h3>
-                      <div className="flex space-x-12">
-                        <div>
-                          <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-widest">Member Since</p>
-                          <p className="text-sm font-bold">{profile?.created_at ? new Date(profile.created_at).getFullYear() : '2024'}</p>
-                        </div>
-                        <div>
-                          <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-widest">Status</p>
-                          <p className="text-sm font-bold flex items-center space-x-1">
-                            <CheckCircle2 size={14} className="text-emerald-300" />
-                            <span>Verified</span>
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {/* Decorative element */}
-                  <div className="absolute -right-12 -bottom-12 w-48 h-48 bg-white/5 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
-                </div>
+        // Sign Out
+        document.getElementById('signout-btn').addEventListener('click', async () => {
+            await window.nixSupabase.auth.signOut();
+            location.reload();
+        });
 
-                {/* Quick Info */}
-                <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl">
-                  <h3 className="text-lg font-bold mb-6 flex items-center space-x-2">
-                    <ExternalLink size={20} className="text-indigo-500" />
-                    <span>Quick Actions</span>
-                  </h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50">
-                      <PlusCircle className="text-indigo-400 mb-2" />
-                      <p className="text-sm font-bold">Add Funds</p>
-                    </button>
-                    <button onClick={() => setView('profile')} className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50">
-                      <Edit3 className="text-indigo-400 mb-2" />
-                      <p className="text-sm font-bold">Update Profile</p>
-                    </button>
-                    <button className="bg-slate-800 hover:bg-slate-700 p-4 rounded-2xl text-left transition-colors border border-slate-700/50 col-span-2">
-                      <div className="flex justify-between items-center">
-                        <p className="text-sm font-bold">Explore Nix Apps</p>
-                        <ExternalLink size={16} className="text-slate-500" />
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+        async function checkSession() {
+            const { data: { session } } = await window.nixSupabase.auth.getSession();
+            if (session) {
+                document.getElementById('auth-view').classList.add('hidden-view');
+                document.getElementById('app-view').classList.remove('hidden-view');
+                loadProfile(session.user.id);
+            }
 
-          {view === 'profile' && (
-            <div className="max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
-                <div className="p-8 border-b border-slate-800">
-                  <h3 className="text-xl font-bold mb-2">Edit your Nix Identity</h3>
-                  <p className="text-slate-400 text-sm">Update your public information across the ecosystem.</p>
-                </div>
-                
-                <div className="p-8 space-y-6">
-                  <div className="grid grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-400 mb-2">Full Name</label>
-                      <input 
-                        type="text" 
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                        defaultValue={profile?.full_name}
-                        onBlur={(e) => updateProfile({ full_name: e.target.value })}
-                        placeholder="John Doe"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-400 mb-2">Location</label>
-                      <input 
-                        type="text" 
-                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                        defaultValue={profile?.location}
-                        onBlur={(e) => updateProfile({ location: e.target.value })}
-                        placeholder="San Francisco, CA"
-                      />
-                    </div>
-                  </div>
+            window.nixSupabase.auth.onAuthStateChange((_event, session) => {
+                if (session) {
+                    document.getElementById('auth-view').classList.add('hidden-view');
+                    document.getElementById('app-view').classList.remove('hidden-view');
+                    loadProfile(session.user.id);
+                }
+            });
+        }
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-400 mb-2">Biography</label>
-                    <textarea 
-                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32"
-                      defaultValue={profile?.bio}
-                      onBlur={(e) => updateProfile({ bio: e.target.value })}
-                      placeholder="Tell the Nix network about yourself..."
-                    ></textarea>
-                  </div>
+        async function loadProfile(userId) {
+            const { data, error } = await window.nixSupabase.from('profiles').select('*').eq('id', userId).single();
+            if (data) {
+                document.getElementById('header-username').innerText = data.username;
+                document.getElementById('header-nixid').innerText = data.nix_id;
+                document.getElementById('card-nixid').innerText = data.nix_id;
+                document.getElementById('user-avatar').innerText = data.username[0].toUpperCase();
+                document.getElementById('stat-credits').innerText = `${data.credit_balance} NX`;
+                document.getElementById('stat-tier').innerText = data.tier;
+                document.getElementById('stat-apps').innerText = data.apps_used;
 
-                  <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl">
-                    <div className="flex items-start space-x-3">
-                      <ShieldCheck className="text-indigo-400 shrink-0 mt-1" size={18} />
-                      <div>
-                        <p className="text-sm font-bold text-indigo-200">System Information</p>
-                        <p className="text-xs text-indigo-400/80">Your nixID (<span className="font-mono">{profile?.nix_id}</span>) and email cannot be changed once established for security reasons.</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="p-8 bg-slate-900/50 border-t border-slate-800 flex justify-end">
-                   <button 
-                    disabled={loading}
-                    className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-indigo-600/20"
-                   >
-                     <Save size={18} />
-                     <span>{loading ? 'Saving...' : 'Save Changes'}</span>
-                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-    </div>
-  );
-};
+                // Fill profile form
+                document.getElementById('p-fullname').value = data.full_name || '';
+                document.getElementById('p-location').value = data.location || '';
+                document.getElementById('p-bio').value = data.bio || '';
+            }
+        }
 
-export default App;
+        document.getElementById('profile-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const { data: { session } } = await window.nixSupabase.auth.getSession();
+            const updates = {
+                full_name: document.getElementById('p-fullname').value,
+                location: document.getElementById('p-location').value,
+                bio: document.getElementById('p-bio').value
+            };
+            const { error } = await window.nixSupabase.from('profiles').update(updates).eq('id', session.user.id);
+            if (error) alert(error.message);
+            else alert('Profile Updated!');
+        });
+
+        function showSection(name) {
+            document.getElementById('dashboard-section').classList.add('hidden-view');
+            document.getElementById('profile-section').classList.add('hidden-view');
+            document.getElementById(`${name}-section`).classList.remove('hidden-view');
+
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('bg-indigo-600', 'text-white');
+                btn.classList.add('text-slate-400');
+            });
+            document.getElementById(`nav-${name}`).classList.add('bg-indigo-600', 'text-white');
+            document.getElementById('view-title').innerText = name === 'dashboard' ? 'Overview' : 'Settings';
+        }
+    </script>
+</body>
+</html>
